@@ -233,7 +233,7 @@ export default function App() {
   const [difficulty, setDifficulty] = useState('medium')
   const [runDifficulty, setRunDifficulty] = useState('medium')
   const [soundEnabled, setSoundEnabled] = useState(true)
-  const [cameraModeEnabled, setCameraModeEnabled] = useState(true)
+  const [cameraModeEnabled, setCameraModeEnabled] = useState(false)
   const [bestScores, setBestScores] = useState({ easy: 0, medium: 0, hard: 0 })
   const [isPaused, setIsPaused] = useState(false)
   const [headRotation, setHeadRotation] = useState(0)
