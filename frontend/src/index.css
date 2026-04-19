@@ -558,15 +558,22 @@ canvas {
 
 @media (max-width: 480px) {
   .start-menu {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
     padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
-    place-items: center;
+    min-height: 100vh;
+    box-sizing: border-box;
   }
 
   .start-card {
     width: calc(100vw - 24px);
     padding: 16px;
     border-radius: 14px;
-    max-height: none;
+    max-height: calc(100vh - 32px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
   .menu-tag {
