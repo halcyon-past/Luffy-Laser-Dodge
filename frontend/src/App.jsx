@@ -209,6 +209,7 @@ function Lasers({ headRotationRef, onHit }) {
 }
 
 export default function App() {
+  const [hasStarted, setHasStarted] = useState(false)
   const [headRotation, setHeadRotation] = useState(0)
   const [isHit, setIsHit] = useState(false)
   const [isGameOver, setIsGameOver] = useState(false)
@@ -255,12 +256,26 @@ export default function App() {
     setHeadRotation(0)
   }
 
+  const startGame = () => {
+    setHasStarted(true)
+    setIsGameOver(false)
+    setIsHit(false)
+    setScore(0)
+    setHeadRotation(0)
+  }
+
   useEffect(() => {
     const handleKeyDown = (e) => {
+      if (!hasStarted && (e.code === 'Space' || e.code === 'Enter')) {
+        startGame()
+        return
+      }
+
       if (isGameOver && e.code === 'Space') {
         restartGame()
         return
       }
+      if (!hasStarted) return
       if (isGameOver) return
       if (e.repeat) return
       
@@ -274,19 +289,19 @@ export default function App() {
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
     }
-  }, [isGameOver])
+  }, [hasStarted, isGameOver])
 
   // Increase score over time if not hit
   useEffect(() => {
-    if (isHit || isGameOver) return
+    if (!hasStarted || isHit || isGameOver) return
     const interval = setInterval(() => {
       setScore(s => s + 10)
     }, 1000)
     return () => clearInterval(interval)
-  }, [isHit, isGameOver])
+  }, [hasStarted, isHit, isGameOver])
 
   const handleHit = () => {
-    if (isGameOver) return
+    if (!hasStarted || isGameOver) return
     setIsHit(true)
     setIsGameOver(true)
   }
@@ -297,7 +312,7 @@ export default function App() {
   }
 
   const handleTouchDodge = (rotation, event) => {
-    if (isGameOver) return
+    if (!hasStarted || isGameOver) return
     if (event.cancelable) {
       event.preventDefault()
     }
@@ -312,13 +327,31 @@ export default function App() {
     >
       <img className="kuma-shooter" src={kuma} alt="Kuma aiming from the ridge" />
 
-      <div style={{ position: 'absolute', top: 20, left: 20, color: 'white', zIndex: 10, fontFamily: 'sans-serif' }}>
-        <h1 style={{ margin: '0 0 10px 0' }}>Luffy Laser Dodge</h1>
-        <p style={{ margin: '0 0 10px 0' }}>Use Left/Right Arrows, A/D, or tap screen halves to dodge</p>
-        <h2 style={{ color: isHit ? 'red' : '#0f0', margin: '0' }}>Score: {score}</h2>
-      </div>
+      {hasStarted && (
+        <div className="hud-panel">
+          <h1 className="hud-title">Luffy Laser Dodge</h1>
+          <p className="hud-copy">Use Left/Right Arrows, A/D, or tap screen halves to dodge</p>
+          <h2 className={`hud-score ${isHit ? 'is-hit' : ''}`}>Score: {score}</h2>
+        </div>
+      )}
 
-      {!isGameOver && (
+      {!hasStarted && (
+        <div className="start-menu">
+          <div className="start-card">
+            <p className="menu-tag">3D reflex challenge</p>
+            <h1 className="menu-title">Luffy Laser Dodge</h1>
+            <p className="menu-copy">Dodge Kuma's laser barrage and survive as long as possible.</p>
+            <button type="button" className="start-btn" onClick={startGame}>Start Game</button>
+            <p className="menu-hint">Press Space or Enter to start</p>
+            <p className="menu-credits">
+              Created by Aritro Saha •{' '}
+              <a href="https://aritro.cloud" target="_blank" rel="noreferrer">aritro.cloud</a>
+            </p>
+          </div>
+        </div>
+      )}
+
+      {!isGameOver && hasStarted && (
         <div
           style={{
             position: 'absolute',
@@ -339,19 +372,10 @@ export default function App() {
         </div>
       )}
 
-      {isGameOver && (
-        <div style={{
-          position: 'absolute', 
-          top: '50%', 
-          left: '50%', 
-          transform: 'translate(-50%, -50%)', 
-          textAlign: 'center',
-          color: 'white', 
-          zIndex: 20, 
-          fontFamily: 'sans-serif'
-        }}>
-          <h1 style={{ color: 'red', fontSize: '4rem', margin: '0 0 20px 0' }}>GAME OVER</h1>
-          <h2 style={{ fontSize: '2rem', margin: 0 }}>Press Spacebar or Click/Tap to Restart</h2>
+      {hasStarted && isGameOver && (
+        <div className="game-over-panel">
+          <h1 className="game-over-title">GAME OVER</h1>
+          <h2 className="game-over-subtitle">Press Spacebar or Click/Tap to Restart</h2>
         </div>
       )}
 
@@ -364,7 +388,7 @@ export default function App() {
           <Luffy headRotation={headRotation} isHit={isHit} />
         </Suspense>
 
-        {!isGameOver && <Lasers headRotationRef={headRotationRef} onHit={handleHit} />}
+        {hasStarted && !isGameOver && <Lasers headRotationRef={headRotationRef} onHit={handleHit} />}
         
         {/* Adjusted Target to keep the camera close but angled down the path */}
         <OrbitControls makeDefault target={[0, 1.4, -4]} enablePan={false} enableZoom={false} enableRotate={false} />
