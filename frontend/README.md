@@ -1,8 +1,21 @@
-# React + Vite
+# Frontend (Vite + React)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+## Run
 
-Currently, two official plugins are available:
+```bash
+npm install
+npm run dev
+```
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## Environment Variables
+
+Copy `.env.example` to `.env` and adjust as needed.
+
+```bash
+cp .env.example .env
+```
+
+- `VITE_BACKEND_OFFER_URL`: full backend WebRTC offer endpoint used by the camera mode.
+	- Local default: `http://localhost:8000/offer`
+
+If not set, the app falls back to `http://localhost:8000/offer`.

@@ -12,7 +12,9 @@ const DIFFICULTY_CONFIG = {
 
 const BEST_SCORES_KEY = 'luffy-laser-dodge-best-scores-by-difficulty'
 const LEGACY_BEST_SCORE_KEY = 'luffy-laser-dodge-best-score'
+const CAMERA_MODE_KEY = 'luffy-laser-dodge-camera-mode-enabled'
 const SITE_TITLE = 'Luffy Laser Dodge'
+const BACKEND_OFFER_URL = import.meta.env.VITE_BACKEND_OFFER_URL || 'http://localhost:8000/offer'
 
 function Luffy({ headRotation, isHit }) {
   const { scene } = useGLTF('/luffy/scene.gltf')
@@ -63,7 +65,7 @@ function Luffy({ headRotation, isHit }) {
       const baseRotation = new THREE.Euler().setFromQuaternion(initialRotation.current)
       // Z-axis rotation rolls the ear to the shoulder, leaning the head out of the center path
       const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(baseRotation.x, baseRotation.y, baseRotation.z + headRotation))
-      targetBone.quaternion.slerp(q, 0.15)
+      targetBone.quaternion.slerp(q, 0.9)
     }
 
     // Keep both arms in a relaxed down pose instead of the default T-pose.
@@ -226,16 +228,23 @@ export default function App() {
   const [difficulty, setDifficulty] = useState('medium')
   const [runDifficulty, setRunDifficulty] = useState('medium')
   const [soundEnabled, setSoundEnabled] = useState(true)
+  const [cameraModeEnabled, setCameraModeEnabled] = useState(true)
   const [bestScores, setBestScores] = useState({ easy: 0, medium: 0, hard: 0 })
   const [isPaused, setIsPaused] = useState(false)
   const [headRotation, setHeadRotation] = useState(0)
   const [isHit, setIsHit] = useState(false)
   const [isGameOver, setIsGameOver] = useState(false)
   const [score, setScore] = useState(0)
+  const [webcamStatus, setWebcamStatus] = useState('idle')
   
   const headRotationRef = useRef(0)
   const dodgeResetTimerRef = useRef(null)
   const audioCtxRef = useRef(null)
+  const peerConnectionRef = useRef(null)
+  const dataChannelRef = useRef(null)
+  const localStreamRef = useRef(null)
+  const previewVideoRef = useRef(null)
+  const gameStateRef = useRef({ hasStarted: false, isPaused: false, isGameOver: false })
 
   const difficultySettings = DIFFICULTY_CONFIG[runDifficulty]
   const selectedLevelBestScore = bestScores[difficulty] || 0
@@ -244,6 +253,10 @@ export default function App() {
   useEffect(() => {
     headRotationRef.current = headRotation
   }, [headRotation])
+
+  useEffect(() => {
+    gameStateRef.current = { hasStarted, isPaused, isGameOver }
+  }, [hasStarted, isPaused, isGameOver])
 
   useEffect(() => {
     const rawBestScores = localStorage.getItem(BEST_SCORES_KEY)
@@ -267,6 +280,11 @@ export default function App() {
       }
     }
 
+    const rawCameraMode = localStorage.getItem(CAMERA_MODE_KEY)
+    if (rawCameraMode === 'false') {
+      setCameraModeEnabled(false)
+    }
+
     return () => {
       if (dodgeResetTimerRef.current) {
         clearTimeout(dodgeResetTimerRef.current)
@@ -280,6 +298,178 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(BEST_SCORES_KEY, JSON.stringify(bestScores))
   }, [bestScores])
+
+  useEffect(() => {
+    localStorage.setItem(CAMERA_MODE_KEY, String(cameraModeEnabled))
+  }, [cameraModeEnabled])
+
+  const stopHeadTracking = useCallback((nextStatus = 'idle') => {
+    if (dataChannelRef.current) {
+      dataChannelRef.current.close()
+      dataChannelRef.current = null
+    }
+
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close()
+      peerConnectionRef.current = null
+    }
+
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => track.stop())
+      localStreamRef.current = null
+    }
+
+    if (previewVideoRef.current) {
+      previewVideoRef.current.srcObject = null
+    }
+
+    setWebcamStatus(nextStatus)
+    setHeadRotation(0)
+  }, [])
+
+  useEffect(() => {
+    if (!hasStarted) {
+      stopHeadTracking('idle')
+      return
+    }
+
+    if (!cameraModeEnabled) {
+      stopHeadTracking('disabled')
+      return
+    }
+
+    let isCancelled = false
+
+    const setupHeadTracking = async () => {
+      try {
+        setWebcamStatus('connecting')
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 320, max: 640 },
+            height: { ideal: 240, max: 480 },
+            frameRate: { ideal: 24, max: 30 },
+            facingMode: 'user'
+          },
+          audio: false
+        })
+
+        if (isCancelled) {
+          stream.getTracks().forEach(track => track.stop())
+          return
+        }
+
+        localStreamRef.current = stream
+
+        if (previewVideoRef.current) {
+          previewVideoRef.current.srcObject = stream
+        }
+
+        const pc = new RTCPeerConnection()
+        peerConnectionRef.current = pc
+
+        const dataChannel = pc.createDataChannel('head-tilt', {
+          ordered: false,
+          maxRetransmits: 0,
+        })
+        dataChannelRef.current = dataChannel
+
+        dataChannel.onopen = () => {
+          setWebcamStatus('connected')
+        }
+
+        dataChannel.onclose = () => {
+          setWebcamStatus('idle')
+        }
+
+        dataChannel.onmessage = (event) => {
+          const currentState = gameStateRef.current
+          if (!currentState.hasStarted || currentState.isPaused || currentState.isGameOver) return
+
+          try {
+            const payload = JSON.parse(event.data)
+            if (payload?.type !== 'head_tilt') return
+
+            if (dodgeResetTimerRef.current) {
+              clearTimeout(dodgeResetTimerRef.current)
+              dodgeResetTimerRef.current = null
+            }
+
+            if (typeof payload.lean === 'number') {
+              const maxTilt = Math.PI / 2.0
+              const scaledTilt = THREE.MathUtils.clamp(payload.lean * -4.8, -1, 1) * maxTilt
+              setHeadRotation(scaledTilt)
+            } else if (payload.direction === 'left') {
+              setHeadRotation(-Math.PI / 2.0)
+            } else if (payload.direction === 'right') {
+              setHeadRotation(Math.PI / 2.0)
+            } else {
+              setHeadRotation(0)
+            }
+          } catch {
+            // Ignore malformed data-channel payloads.
+          }
+        }
+
+        stream.getVideoTracks().forEach(track => pc.addTrack(track, stream))
+
+        const offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+
+        await new Promise((resolve) => {
+          if (pc.iceGatheringState === 'complete') {
+            resolve()
+            return
+          }
+
+          const onIceGatheringStateChange = () => {
+            if (pc.iceGatheringState === 'complete') {
+              pc.removeEventListener('icegatheringstatechange', onIceGatheringStateChange)
+              resolve()
+            }
+          }
+
+          pc.addEventListener('icegatheringstatechange', onIceGatheringStateChange)
+
+          // Fallback: resolve even if ICE gathering stalls.
+          setTimeout(() => {
+            pc.removeEventListener('icegatheringstatechange', onIceGatheringStateChange)
+            resolve()
+          }, 1200)
+        })
+
+        const response = await fetch(BACKEND_OFFER_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sdp: pc.localDescription?.sdp ?? offer.sdp,
+            type: pc.localDescription?.type ?? offer.type
+          })
+        })
+
+        if (!response.ok) {
+          throw new Error(`Backend offer failed: ${response.status}`)
+        }
+
+        const answer = await response.json()
+        if (!isCancelled) {
+          await pc.setRemoteDescription(answer)
+          setWebcamStatus('connecting')
+        }
+      } catch {
+        if (!isCancelled) {
+          stopHeadTracking('error')
+        }
+      }
+    }
+
+    setupHeadTracking()
+
+    return () => {
+      isCancelled = true
+      stopHeadTracking('idle')
+    }
+  }, [cameraModeEnabled, hasStarted, stopHeadTracking])
 
   const ensureAudioContext = useCallback(async () => {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext
@@ -486,9 +676,22 @@ export default function App() {
             <h1 className="hud-title">{SITE_TITLE}</h1>
           </div>
           <p className="hud-copy">Use Left/Right Arrows, A/D, or tap screen halves to dodge</p>
+          <p className={`hud-webcam webcam-${webcamStatus}`}>Camera Mode: {cameraModeEnabled ? webcamStatus : 'disabled'}</p>
           <h2 className={`hud-score ${isHit ? 'is-hit' : ''}`}>Score: {score}</h2>
           <p className="hud-best">Best ({DIFFICULTY_CONFIG[runDifficulty].label}): {runLevelBestScore}</p>
           <button type="button" className="pause-btn" onClick={togglePause}>{isPaused ? 'Resume' : 'Pause'}</button>
+        </div>
+      )}
+
+      {hasStarted && cameraModeEnabled && (
+        <div className="webcam-preview-wrap">
+          <video
+            ref={previewVideoRef}
+            className="webcam-preview"
+            autoPlay
+            muted
+            playsInline
+          />
         </div>
       )}
 
@@ -525,6 +728,17 @@ export default function App() {
                   onClick={() => setSoundEnabled(prev => !prev)}
                 >
                   {soundEnabled ? 'On' : 'Off'}
+                </button>
+              </div>
+
+              <div className="option-group">
+                <p className="option-label">Camera Mode</p>
+                <button
+                  type="button"
+                  className={`option-btn sound-toggle ${cameraModeEnabled ? 'active' : ''}`}
+                  onClick={() => setCameraModeEnabled(prev => !prev)}
+                >
+                  {cameraModeEnabled ? 'On' : 'Off'}
                 </button>
               </div>
 
@@ -583,6 +797,17 @@ export default function App() {
               </button>
             </div>
 
+            <div className="option-group">
+              <p className="option-label">Camera Mode</p>
+              <button
+                type="button"
+                className={`option-btn sound-toggle ${cameraModeEnabled ? 'active' : ''}`}
+                onClick={() => setCameraModeEnabled(prev => !prev)}
+              >
+                {cameraModeEnabled ? 'On' : 'Off'}
+              </button>
+            </div>
+
             <div className="menu-actions">
               <button type="button" className="start-btn" onClick={togglePause}>Resume Game</button>
               <button type="button" className="secondary-btn" onClick={backToMainMenu}>Back to Main Menu</button>
@@ -615,6 +840,16 @@ export default function App() {
                   </button>
                 ))}
               </div>
+
+              <p className="option-label">Camera Mode</p>
+              <button
+                type="button"
+                className={`option-btn sound-toggle ${cameraModeEnabled ? 'active' : ''}`}
+                onClick={() => setCameraModeEnabled(prev => !prev)}
+              >
+                {cameraModeEnabled ? 'On' : 'Off'}
+              </button>
+
               <p className="menu-best">High Score ({DIFFICULTY_CONFIG[difficulty].label}): {selectedLevelBestScore}</p>
             </div>
 

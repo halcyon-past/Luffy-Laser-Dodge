@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+ENV/
+
+# Conda
+.conda/
+
+# Environment / secrets
+.env
+# Ignore all .env.* except .env.example
+!.env.example
+.env.*
+
+# OS
+.DS_Store

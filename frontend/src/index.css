@@ -98,6 +98,29 @@ canvas {
   line-height: 1.36;
 }
 
+.hud-webcam {
+  margin: 0 0 10px;
+  font-size: clamp(0.72rem, 1.3vw, 0.9rem);
+  letter-spacing: 0.02em;
+}
+
+.webcam-idle,
+.webcam-connecting {
+  color: #f0d58b;
+}
+
+.webcam-connected {
+  color: #8df3b3;
+}
+
+.webcam-disabled {
+  color: #9ab4cc;
+}
+
+.webcam-error {
+  color: #ff8a8a;
+}
+
 .hud-score {
   margin: 0;
   color: #6dff9a;
@@ -124,6 +147,27 @@ canvas {
   font-size: 0.88rem;
   padding: 6px 12px;
   cursor: pointer;
+}
+
+.webcam-preview-wrap {
+  position: absolute;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  z-index: 12;
+  width: min(28vw, 210px);
+  aspect-ratio: 4 / 3;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(145, 220, 255, 0.46);
+  background: rgba(5, 12, 21, 0.7);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.42);
+}
+
+.webcam-preview {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
 }
 
 .start-menu {
@@ -496,6 +540,11 @@ canvas {
     padding: 16px;
   }
 
+  .webcam-preview-wrap {
+    width: min(34vw, 160px);
+    border-radius: 10px;
+  }
+
   .kuma-shooter {
     top: 34%;
     left: 57%;
@@ -574,6 +623,13 @@ canvas {
     top: 37%;
     left: 58%;
     width: clamp(84px, 32vw, 150px);
+  }
+
+  .webcam-preview-wrap {
+    width: min(42vw, 132px);
+    top: max(10px, env(safe-area-inset-top));
+    right: max(10px, env(safe-area-inset-right));
+    border-radius: 8px;
   }
 }
 
