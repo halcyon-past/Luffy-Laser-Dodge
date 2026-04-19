@@ -2,10 +2,46 @@ import React, { useRef, useState, useEffect, Suspense } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { useGLTF, Environment, OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
+import kuma from './assets/kuma.png'
 
 function Luffy({ headRotation, isHit }) {
   const { scene } = useGLTF('/luffy/scene.gltf')
   const initialRotation = useRef(null)
+  const armPoseTargets = useRef([])
+
+  useEffect(() => {
+    const poseConfigs = [
+      {
+        names: ['arm *side* shoulder 2.L_224', 'arm *side* shoulder 1.L_245'],
+        euler: new THREE.Euler(0.12, 0, 1.2)
+      },
+      {
+        names: ['arm *side* shoulder 2.R_252', 'arm *side* shoulder 1.R_273'],
+        euler: new THREE.Euler(0.12, 0, -1.2)
+      },
+      {
+        names: ['arm *side* elbow.L_220'],
+        euler: new THREE.Euler(0, 0, 0.22)
+      },
+      {
+        names: ['arm *side* elbow.R_248'],
+        euler: new THREE.Euler(0, 0, -0.22)
+      }
+    ]
+
+    armPoseTargets.current = poseConfigs
+      .map(({ names, euler }) => {
+        const bone = names.map(name => scene.getObjectByName(name)).find(Boolean)
+        if (!bone) return null
+
+        const base = bone.quaternion.clone()
+        const offset = new THREE.Quaternion().setFromEuler(euler)
+        const target = base.clone().multiply(offset)
+
+        return { bone, target }
+      })
+      .filter(Boolean)
+  }, [scene])
 
   useFrame(() => {
     const targetBone = scene.getObjectByName('head_neck_lower_217') || scene.getObjectByName('head neck lower_217') || scene.getObjectByName('head_neck_upper_216') || scene.getObjectByName('head neck upper_216')
@@ -19,6 +55,11 @@ function Luffy({ headRotation, isHit }) {
       const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(baseRotation.x, baseRotation.y, baseRotation.z + headRotation))
       targetBone.quaternion.slerp(q, 0.15)
     }
+
+    // Keep both arms in a relaxed down pose instead of the default T-pose.
+    armPoseTargets.current.forEach(({ bone, target }) => {
+      bone.quaternion.slerp(target, 0.12)
+    })
   })
 
   // Flash red when hit
@@ -38,30 +79,92 @@ function Luffy({ headRotation, isHit }) {
   return <primitive object={scene} position={[0, 0, 0]} rotation={[0, Math.PI, 0]} castShadow receiveShadow />
 }
 
-function Laser({ position, color, onHit, headRotationRef }) {
-  const meshRef = useRef()
+function Laser({ id, position, onHit, onPassed, headRotationRef }) {
+  const laserRef = useRef()
+  const pulseRef = useRef()
+  const tipRef = useRef()
   const hasHit = useRef(false)
+  const hasPassed = useRef(false)
+  const phase = useRef(Math.random() * Math.PI * 2)
 
   useFrame((state, delta) => {
-    if (meshRef.current) {
-      meshRef.current.position.z += delta * 20 // Speed of the laser
+    if (laserRef.current) {
+      laserRef.current.position.z += delta * 20 // Speed of the laser
 
       // Collision detection plane
-      if (!hasHit.current && meshRef.current.position.z > -0.5 && meshRef.current.position.z < 0.5) {
+      if (!hasHit.current && laserRef.current.position.z > -0.5 && laserRef.current.position.z < 0.5) {
         // If head is completely upright (not dodged), it's a hit!
         if (Math.abs(headRotationRef.current) < 0.5) {
           hasHit.current = true
           onHit()
         }
       }
+
+      if (!hasPassed.current && laserRef.current.position.z > 12) {
+        hasPassed.current = true
+        onPassed(id)
+      }
+
+      const pulse = 1 + Math.sin(state.clock.elapsedTime * 24 + phase.current) * 0.18
+      if (pulseRef.current) {
+        pulseRef.current.scale.set(pulse, 1, pulse)
+      }
+      if (tipRef.current) {
+        tipRef.current.scale.setScalar(1 + Math.sin(state.clock.elapsedTime * 30 + phase.current) * 0.12)
+      }
     }
   })
 
   return (
-    <mesh ref={meshRef} position={position} rotation={[Math.PI / 2, 0, 0]}>
-      <cylinderGeometry args={[0.08, 0.08, 4]} />
-      <meshStandardMaterial color={color} emissive={color} emissiveIntensity={5} />
-    </mesh>
+    <group ref={laserRef} position={position} rotation={[Math.PI / 2, 0, 0]}>
+      <mesh>
+        <cylinderGeometry args={[0.026, 0.026, 4, 14, 1, true]} />
+        <meshBasicMaterial
+          color="#ffffff"
+          transparent
+          opacity={0.92}
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+        />
+      </mesh>
+
+      <mesh>
+        <cylinderGeometry args={[0.07, 0.07, 4, 18, 1, true]} />
+        <meshBasicMaterial
+          color="#9fefff"
+          transparent
+          opacity={0.42}
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+
+      <mesh ref={pulseRef}>
+        <cylinderGeometry args={[0.12, 0.12, 4, 20, 1, true]} />
+        <meshBasicMaterial
+          color="#4ab7ff"
+          transparent
+          opacity={0.18}
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+
+      <mesh ref={tipRef} position={[0, 2.05, 0]}>
+        <sphereGeometry args={[0.11, 16, 16]} />
+        <meshBasicMaterial
+          color="#d7f7ff"
+          transparent
+          opacity={0.85}
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+        />
+      </mesh>
+
+      <pointLight color="#78d7ff" intensity={2.8} distance={2.8} decay={2} />
+    </group>
   )
 }
 
@@ -72,9 +175,7 @@ function Lasers({ headRotationRef, onHit }) {
   useEffect(() => {
     timer.current = setInterval(() => {
       setLasers(prev => {
-        // Clear lasers that passed the camera
-        const activeLasers = prev.filter(l => l.z < 10)
-        return [...activeLasers, {
+        return [...prev, {
           id: Date.now(),
           x: 0, 
           // Raised the laser to perfectly align with his head height (face/hat area)
@@ -87,14 +188,19 @@ function Lasers({ headRotationRef, onHit }) {
     return () => clearInterval(timer.current)
   }, [])
 
+  const handleLaserPassed = (laserId) => {
+    setLasers(prev => prev.filter(laser => laser.id !== laserId))
+  }
+
   return (
     <group>
       {lasers.map(laser => (
         <Laser 
+          id={laser.id}
           key={laser.id} 
           position={[laser.x, laser.y, laser.z]} 
-          color="red" 
           onHit={onHit}
+          onPassed={handleLaserPassed}
           headRotationRef={headRotationRef}
         />
       ))}
@@ -109,37 +215,64 @@ export default function App() {
   const [score, setScore] = useState(0)
   
   const headRotationRef = useRef(0)
+  const dodgeResetTimerRef = useRef(null)
 
   useEffect(() => {
     headRotationRef.current = headRotation
   }, [headRotation])
 
   useEffect(() => {
+    return () => {
+      if (dodgeResetTimerRef.current) {
+        clearTimeout(dodgeResetTimerRef.current)
+      }
+    }
+  }, [])
+
+  const triggerDodge = (rotation) => {
+    setHeadRotation(rotation)
+
+    if (dodgeResetTimerRef.current) {
+      clearTimeout(dodgeResetTimerRef.current)
+    }
+
+    // Auto-center after a single dodge window, even if the key is held.
+    dodgeResetTimerRef.current = setTimeout(() => {
+      setHeadRotation(0)
+      dodgeResetTimerRef.current = null
+    }, 450)
+  }
+
+  const restartGame = () => {
+    if (dodgeResetTimerRef.current) {
+      clearTimeout(dodgeResetTimerRef.current)
+      dodgeResetTimerRef.current = null
+    }
+
+    setIsGameOver(false)
+    setIsHit(false)
+    setScore(0)
+    setHeadRotation(0)
+  }
+
+  useEffect(() => {
     const handleKeyDown = (e) => {
       if (isGameOver && e.code === 'Space') {
-        setIsGameOver(false)
-        setIsHit(false)
-        setScore(0)
+        restartGame()
         return
       }
       if (isGameOver) return
+      if (e.repeat) return
       
       if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
-        setHeadRotation(Math.PI / 2.0) 
+        triggerDodge(-Math.PI / 2.0)
       } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
-        setHeadRotation(-Math.PI / 2.0) 
-      }
-    }
-    const handleKeyUp = (e) => {
-      if (['ArrowLeft', 'a', 'A', 'ArrowRight', 'd', 'D'].includes(e.key)) {
-        setHeadRotation(0) 
+        triggerDodge(Math.PI / 2.0)
       }
     }
     window.addEventListener('keydown', handleKeyDown)
-    window.addEventListener('keyup', handleKeyUp)
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
-      window.removeEventListener('keyup', handleKeyUp)
     }
   }, [isGameOver])
 
@@ -158,13 +291,53 @@ export default function App() {
     setIsGameOver(true)
   }
 
+  const handleScreenRestart = () => {
+    if (!isGameOver) return
+    restartGame()
+  }
+
+  const handleTouchDodge = (rotation, event) => {
+    if (isGameOver) return
+    if (event.cancelable) {
+      event.preventDefault()
+    }
+    triggerDodge(rotation)
+  }
+
   return (
-    <div style={{ width: '100vw', height: '100vh', background: isHit ? '#400' : '#000', margin: 0, padding: 0, transition: 'background 0.1s', overflow: 'hidden' }}>
+    <div
+      className={`game-root ${isHit ? 'hit' : ''}`}
+      onClick={handleScreenRestart}
+      onTouchStart={handleScreenRestart}
+    >
+      <img className="kuma-shooter" src={kuma} alt="Kuma aiming from the ridge" />
+
       <div style={{ position: 'absolute', top: 20, left: 20, color: 'white', zIndex: 10, fontFamily: 'sans-serif' }}>
         <h1 style={{ margin: '0 0 10px 0' }}>Luffy Laser Dodge</h1>
-        <p style={{ margin: '0 0 10px 0' }}>Use Left/Right Arrows or A/D to dodge</p>
+        <p style={{ margin: '0 0 10px 0' }}>Use Left/Right Arrows, A/D, or tap screen halves to dodge</p>
         <h2 style={{ color: isHit ? 'red' : '#0f0', margin: '0' }}>Score: {score}</h2>
       </div>
+
+      {!isGameOver && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 8,
+            display: 'flex',
+            touchAction: 'none'
+          }}
+        >
+          <div
+            style={{ flex: 1 }}
+            onTouchStart={(event) => handleTouchDodge(-Math.PI / 2.0, event)}
+          />
+          <div
+            style={{ flex: 1 }}
+            onTouchStart={(event) => handleTouchDodge(Math.PI / 2.0, event)}
+          />
+        </div>
+      )}
 
       {isGameOver && (
         <div style={{
@@ -178,7 +351,7 @@ export default function App() {
           fontFamily: 'sans-serif'
         }}>
           <h1 style={{ color: 'red', fontSize: '4rem', margin: '0 0 20px 0' }}>GAME OVER</h1>
-          <h2 style={{ fontSize: '2rem', margin: 0 }}>Press Spacebar to Restart</h2>
+          <h2 style={{ fontSize: '2rem', margin: 0 }}>Press Spacebar or Click/Tap to Restart</h2>
         </div>
       )}
 

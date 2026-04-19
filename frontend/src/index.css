@@ -7,3 +7,105 @@ body, html {
   background-color: #111;
   color: white;
 }
+
+#root {
+  width: 100%;
+  height: 100%;
+}
+
+.game-root {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-image:
+    linear-gradient(to bottom, rgba(8, 25, 43, 0.45) 0%, rgba(20, 49, 28, 0.2) 48%, rgba(2, 7, 10, 0.6) 100%),
+    url('https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1920&q=80');
+  background-size: cover;
+  background-position: center 54%;
+  transition: filter 0.2s ease;
+}
+
+.game-root::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(circle at 50% 28%, rgba(255, 255, 255, 0.18) 0%, rgba(255, 255, 255, 0.03) 42%, rgba(0, 0, 0, 0.16) 100%);
+  z-index: 1;
+}
+
+.game-root.hit {
+  filter: saturate(1.25) hue-rotate(-22deg) brightness(0.74);
+}
+
+.kuma-shooter {
+  position: absolute;
+  top: 30%;
+  left: 55%;
+  width: clamp(110px, 14vw, 230px);
+  transform: translateX(-50%);
+  z-index: 2;
+  pointer-events: none;
+  filter: drop-shadow(0 10px 14px rgba(0, 0, 0, 0.75));
+  opacity: 0.94;
+}
+
+canvas {
+  position: relative;
+  z-index: 3;
+}
+
+@media (min-width: 721px) and (max-width: 820px) and (orientation: portrait) {
+  .kuma-shooter {
+    top: 39%;
+    left: 56%;
+    width: clamp(105px, 20vw, 170px);
+  }
+
+  .game-root {
+    background-position: 56% 58%;
+  }
+}
+
+@media (min-width: 900px) and (max-height: 820px) and (orientation: landscape) {
+  .kuma-shooter {
+    top: 30%;
+    left: 54%;
+    width: clamp(96px, 14vw, 150px);
+  }
+
+  .game-root {
+    background-position: 52% 57%;
+  }
+}
+
+@media (max-width: 720px) {
+  .kuma-shooter {
+    top: 34%;
+    left: 57%;
+    width: clamp(90px, 28vw, 170px);
+  }
+
+  .game-root {
+    background-position: 60% 58%;
+  }
+}
+
+@media (max-width: 480px) {
+  .kuma-shooter {
+    top: 37%;
+    left: 58%;
+    width: clamp(84px, 32vw, 150px);
+  }
+}
+
+@media (max-height: 500px) and (orientation: landscape) {
+  .kuma-shooter {
+    top: 24%;
+    left: 55%;
+    width: clamp(82px, 16vw, 130px);
+  }
+}
