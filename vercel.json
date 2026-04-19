@@ -1,0 +1,27 @@
+{
+  "projects": [
+    {
+      "src": "frontend",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "dist"
+      }
+    },
+    {
+      "src": "backend",
+      "use": "@vercel/python",
+      "config": {
+        "maxLambdaSize": "50mb",
+        "includeFiles": [
+          "backend/requirements.txt",
+          "backend/main.py"
+        ]
+      }
+    }
+  ],
+  "build": {
+    "env": {
+      "VITE_BACKEND_OFFER_URL": "http://localhost:8000/offer"
+    }
+  }
+}
