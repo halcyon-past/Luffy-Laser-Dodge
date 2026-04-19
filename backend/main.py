@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 
 
 import cv2
-from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
 from aiortc.contrib.media import MediaRelay
 from aiortc.mediastreams import MediaStreamError
 from fastapi import FastAPI
@@ -179,9 +179,13 @@ async def health_check():
 	return {'status': 'ok'}
 
 
+
 @app.post('/offer')
 async def offer(payload: OfferRequest):
-	pc = RTCPeerConnection()
+	# Use public Google STUN server for ICE
+	ice_servers = [RTCIceServer(urls=['stun:stun.l.google.com:19302'])]
+	config = RTCConfiguration(iceServers=ice_servers)
+	pc = RTCPeerConnection(configuration=config)
 	pcs.add(pc)
 
 	state = {
