@@ -1,8 +1,18 @@
-import React, { useRef, useState, useEffect, Suspense } from 'react'
+import React, { useRef, useState, useEffect, Suspense, useCallback } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { useGLTF, Environment, OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
 import kuma from './assets/kuma.png'
+
+const DIFFICULTY_CONFIG = {
+  easy: { label: 'Easy', spawnInterval: 1500, laserSpeed: 14, scorePerTick: 8 },
+  medium: { label: 'Medium', spawnInterval: 1200, laserSpeed: 20, scorePerTick: 10 },
+  hard: { label: 'Hard', spawnInterval: 880, laserSpeed: 26, scorePerTick: 14 }
+}
+
+const BEST_SCORES_KEY = 'luffy-laser-dodge-best-scores-by-difficulty'
+const LEGACY_BEST_SCORE_KEY = 'luffy-laser-dodge-best-score'
+const SITE_TITLE = 'Luffy Laser Dodge'
 
 function Luffy({ headRotation, isHit }) {
   const { scene } = useGLTF('/luffy/scene.gltf')
@@ -79,7 +89,7 @@ function Luffy({ headRotation, isHit }) {
   return <primitive object={scene} position={[0, 0, 0]} rotation={[0, Math.PI, 0]} castShadow receiveShadow />
 }
 
-function Laser({ id, position, onHit, onPassed, headRotationRef }) {
+function Laser({ id, position, speed, onHit, onPassed, headRotationRef }) {
   const laserRef = useRef()
   const pulseRef = useRef()
   const tipRef = useRef()
@@ -89,7 +99,7 @@ function Laser({ id, position, onHit, onPassed, headRotationRef }) {
 
   useFrame((state, delta) => {
     if (laserRef.current) {
-      laserRef.current.position.z += delta * 20 // Speed of the laser
+      laserRef.current.position.z += delta * speed
 
       // Collision detection plane
       if (!hasHit.current && laserRef.current.position.z > -0.5 && laserRef.current.position.z < 0.5) {
@@ -168,12 +178,14 @@ function Laser({ id, position, onHit, onPassed, headRotationRef }) {
   )
 }
 
-function Lasers({ headRotationRef, onHit }) {
+function Lasers({ difficulty, headRotationRef, onHit, onLaserFired }) {
   const [lasers, setLasers] = useState([])
   const timer = useRef()
+  const { spawnInterval, laserSpeed } = DIFFICULTY_CONFIG[difficulty]
 
   useEffect(() => {
     timer.current = setInterval(() => {
+      onLaserFired()
       setLasers(prev => {
         return [...prev, {
           id: Date.now(),
@@ -184,9 +196,9 @@ function Lasers({ headRotationRef, onHit }) {
           z: -25 
         }]
       })
-    }, 1200)
+    }, spawnInterval)
     return () => clearInterval(timer.current)
-  }, [])
+  }, [onLaserFired, spawnInterval])
 
   const handleLaserPassed = (laserId) => {
     setLasers(prev => prev.filter(laser => laser.id !== laserId))
@@ -199,6 +211,7 @@ function Lasers({ headRotationRef, onHit }) {
           id={laser.id}
           key={laser.id} 
           position={[laser.x, laser.y, laser.z]} 
+          speed={laserSpeed}
           onHit={onHit}
           onPassed={handleLaserPassed}
           headRotationRef={headRotationRef}
@@ -210,6 +223,11 @@ function Lasers({ headRotationRef, onHit }) {
 
 export default function App() {
   const [hasStarted, setHasStarted] = useState(false)
+  const [difficulty, setDifficulty] = useState('medium')
+  const [runDifficulty, setRunDifficulty] = useState('medium')
+  const [soundEnabled, setSoundEnabled] = useState(true)
+  const [bestScores, setBestScores] = useState({ easy: 0, medium: 0, hard: 0 })
+  const [isPaused, setIsPaused] = useState(false)
   const [headRotation, setHeadRotation] = useState(0)
   const [isHit, setIsHit] = useState(false)
   const [isGameOver, setIsGameOver] = useState(false)
@@ -217,18 +235,119 @@ export default function App() {
   
   const headRotationRef = useRef(0)
   const dodgeResetTimerRef = useRef(null)
+  const audioCtxRef = useRef(null)
+
+  const difficultySettings = DIFFICULTY_CONFIG[runDifficulty]
+  const selectedLevelBestScore = bestScores[difficulty] || 0
+  const runLevelBestScore = bestScores[runDifficulty] || 0
 
   useEffect(() => {
     headRotationRef.current = headRotation
   }, [headRotation])
 
   useEffect(() => {
+    const rawBestScores = localStorage.getItem(BEST_SCORES_KEY)
+    if (rawBestScores) {
+      try {
+        const parsedBestScores = JSON.parse(rawBestScores)
+        setBestScores(prev => ({
+          ...prev,
+          easy: Number.isFinite(parsedBestScores?.easy) ? parsedBestScores.easy : prev.easy,
+          medium: Number.isFinite(parsedBestScores?.medium) ? parsedBestScores.medium : prev.medium,
+          hard: Number.isFinite(parsedBestScores?.hard) ? parsedBestScores.hard : prev.hard
+        }))
+      } catch {
+        // Fall back to legacy single-score migration below.
+      }
+    } else {
+      const rawLegacyScore = localStorage.getItem(LEGACY_BEST_SCORE_KEY)
+      const parsedLegacyScore = Number(rawLegacyScore)
+      if (Number.isFinite(parsedLegacyScore) && parsedLegacyScore > 0) {
+        setBestScores(prev => ({ ...prev, medium: parsedLegacyScore }))
+      }
+    }
+
     return () => {
       if (dodgeResetTimerRef.current) {
         clearTimeout(dodgeResetTimerRef.current)
       }
+      if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
+        audioCtxRef.current.close()
+      }
     }
   }, [])
+
+  useEffect(() => {
+    localStorage.setItem(BEST_SCORES_KEY, JSON.stringify(bestScores))
+  }, [bestScores])
+
+  const ensureAudioContext = useCallback(async () => {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext
+    if (!AudioContextClass) return null
+
+    if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
+      audioCtxRef.current = new AudioContextClass()
+    }
+
+    if (audioCtxRef.current.state === 'suspended') {
+      await audioCtxRef.current.resume()
+    }
+
+    return audioCtxRef.current
+  }, [])
+
+  const playLaserSfx = useCallback(async () => {
+    if (!soundEnabled) return
+    const ctx = await ensureAudioContext()
+    if (!ctx) return
+
+    const now = ctx.currentTime
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    const filter = ctx.createBiquadFilter()
+
+    osc.type = 'sawtooth'
+    osc.frequency.setValueAtTime(900, now)
+    osc.frequency.exponentialRampToValueAtTime(560, now + 0.09)
+
+    filter.type = 'lowpass'
+    filter.frequency.setValueAtTime(1800, now)
+
+    gain.gain.setValueAtTime(0.0001, now)
+    gain.gain.exponentialRampToValueAtTime(0.04, now + 0.015)
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.1)
+
+    osc.connect(filter)
+    filter.connect(gain)
+    gain.connect(ctx.destination)
+
+    osc.start(now)
+    osc.stop(now + 0.11)
+  }, [ensureAudioContext, soundEnabled])
+
+  const playHitSfx = useCallback(async () => {
+    if (!soundEnabled) return
+    const ctx = await ensureAudioContext()
+    if (!ctx) return
+
+    const now = ctx.currentTime
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+
+    osc.type = 'triangle'
+    osc.frequency.setValueAtTime(260, now)
+    osc.frequency.exponentialRampToValueAtTime(90, now + 0.25)
+
+    gain.gain.setValueAtTime(0.0001, now)
+    gain.gain.exponentialRampToValueAtTime(0.12, now + 0.02)
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.26)
+
+    osc.connect(gain)
+    gain.connect(ctx.destination)
+
+    osc.start(now)
+    osc.stop(now + 0.28)
+  }, [ensureAudioContext, soundEnabled])
 
   const triggerDodge = (rotation) => {
     setHeadRotation(rotation)
@@ -251,17 +370,42 @@ export default function App() {
     }
 
     setIsGameOver(false)
+    setIsPaused(false)
     setIsHit(false)
     setScore(0)
     setHeadRotation(0)
+    setRunDifficulty(difficulty)
+  }
+
+  const backToMainMenu = () => {
+    if (dodgeResetTimerRef.current) {
+      clearTimeout(dodgeResetTimerRef.current)
+      dodgeResetTimerRef.current = null
+    }
+
+    setHasStarted(false)
+    setIsGameOver(false)
+    setIsPaused(false)
+    setIsHit(false)
+    setScore(0)
+    setHeadRotation(0)
+    setRunDifficulty(difficulty)
   }
 
   const startGame = () => {
+    ensureAudioContext()
     setHasStarted(true)
     setIsGameOver(false)
+    setIsPaused(false)
     setIsHit(false)
     setScore(0)
     setHeadRotation(0)
+    setRunDifficulty(difficulty)
+  }
+
+  const togglePause = () => {
+    if (!hasStarted || isGameOver) return
+    setIsPaused(prev => !prev)
   }
 
   useEffect(() => {
@@ -277,6 +421,13 @@ export default function App() {
       }
       if (!hasStarted) return
       if (isGameOver) return
+
+      if (e.code === 'KeyP') {
+        togglePause()
+        return
+      }
+
+      if (isPaused) return
       if (e.repeat) return
       
       if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
@@ -289,30 +440,35 @@ export default function App() {
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
     }
-  }, [hasStarted, isGameOver])
+  }, [hasStarted, isGameOver, isPaused])
 
   // Increase score over time if not hit
   useEffect(() => {
-    if (!hasStarted || isHit || isGameOver) return
+    if (!hasStarted || isPaused || isHit || isGameOver) return
     const interval = setInterval(() => {
-      setScore(s => s + 10)
+      setScore(s => s + difficultySettings.scorePerTick)
     }, 1000)
     return () => clearInterval(interval)
-  }, [hasStarted, isHit, isGameOver])
+  }, [difficultySettings.scorePerTick, hasStarted, isPaused, isHit, isGameOver])
+
+  useEffect(() => {
+    if (!hasStarted || isGameOver) return
+    setBestScores(prev => {
+      const currentBest = prev[runDifficulty] || 0
+      if (score <= currentBest) return prev
+      return { ...prev, [runDifficulty]: score }
+    })
+  }, [hasStarted, isGameOver, runDifficulty, score])
 
   const handleHit = () => {
     if (!hasStarted || isGameOver) return
+    playHitSfx()
     setIsHit(true)
     setIsGameOver(true)
   }
 
-  const handleScreenRestart = () => {
-    if (!isGameOver) return
-    restartGame()
-  }
-
   const handleTouchDodge = (rotation, event) => {
-    if (!hasStarted || isGameOver) return
+    if (!hasStarted || isPaused || isGameOver) return
     if (event.cancelable) {
       event.preventDefault()
     }
@@ -320,27 +476,61 @@ export default function App() {
   }
 
   return (
-    <div
-      className={`game-root ${isHit ? 'hit' : ''}`}
-      onClick={handleScreenRestart}
-      onTouchStart={handleScreenRestart}
-    >
+    <div className={`game-root ${isHit ? 'hit' : ''}`}>
       <img className="kuma-shooter" src={kuma} alt="Kuma aiming from the ridge" />
 
       {hasStarted && (
         <div className="hud-panel">
-          <h1 className="hud-title">Luffy Laser Dodge</h1>
+          <div className="brand-row">
+            <img className="brand-logo" src="/logo_nobg.png" alt="Luffy Laser Dodge logo" />
+            <h1 className="hud-title">{SITE_TITLE}</h1>
+          </div>
           <p className="hud-copy">Use Left/Right Arrows, A/D, or tap screen halves to dodge</p>
           <h2 className={`hud-score ${isHit ? 'is-hit' : ''}`}>Score: {score}</h2>
+          <p className="hud-best">Best ({DIFFICULTY_CONFIG[runDifficulty].label}): {runLevelBestScore}</p>
+          <button type="button" className="pause-btn" onClick={togglePause}>{isPaused ? 'Resume' : 'Pause'}</button>
         </div>
       )}
 
       {!hasStarted && (
         <div className="start-menu">
           <div className="start-card">
+            <img className="menu-logo" src="/logo_nobg.png" alt="Luffy Laser Dodge logo" />
             <p className="menu-tag">3D reflex challenge</p>
-            <h1 className="menu-title">Luffy Laser Dodge</h1>
+            <h1 className="menu-title">{SITE_TITLE}</h1>
             <p className="menu-copy">Dodge Kuma's laser barrage and survive as long as possible.</p>
+
+            <div className="menu-options">
+              <div className="option-group">
+                <p className="option-label">Difficulty</p>
+                <div className="option-buttons">
+                  {Object.entries(DIFFICULTY_CONFIG).map(([key, value]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      className={`option-btn ${difficulty === key ? 'active' : ''}`}
+                      onClick={() => setDifficulty(key)}
+                    >
+                      {value.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="option-group">
+                <p className="option-label">Sound Effects</p>
+                <button
+                  type="button"
+                  className={`option-btn sound-toggle ${soundEnabled ? 'active' : ''}`}
+                  onClick={() => setSoundEnabled(prev => !prev)}
+                >
+                  {soundEnabled ? 'On' : 'Off'}
+                </button>
+              </div>
+
+              <p className="menu-best">High Score ({DIFFICULTY_CONFIG[difficulty].label}): {selectedLevelBestScore}</p>
+            </div>
+
             <button type="button" className="start-btn" onClick={startGame}>Start Game</button>
             <p className="menu-hint">Press Space or Enter to start</p>
             <p className="menu-credits">
@@ -351,7 +541,7 @@ export default function App() {
         </div>
       )}
 
-      {!isGameOver && hasStarted && (
+      {!isGameOver && !isPaused && hasStarted && (
         <div
           style={{
             position: 'absolute',
@@ -372,10 +562,67 @@ export default function App() {
         </div>
       )}
 
+      {hasStarted && !isGameOver && isPaused && (
+        <div className="pause-overlay" onClick={togglePause} onTouchStart={togglePause}>
+          <div
+            className="pause-panel"
+            onClick={(event) => event.stopPropagation()}
+            onTouchStart={(event) => event.stopPropagation()}
+          >
+            <h2 className="pause-title">Paused</h2>
+            <p className="pause-copy">Adjust your sound settings and resume when ready.</p>
+
+            <div className="option-group">
+              <p className="option-label">Sound Effects</p>
+              <button
+                type="button"
+                className={`option-btn sound-toggle ${soundEnabled ? 'active' : ''}`}
+                onClick={() => setSoundEnabled(prev => !prev)}
+              >
+                {soundEnabled ? 'On' : 'Off'}
+              </button>
+            </div>
+
+            <div className="menu-actions">
+              <button type="button" className="start-btn" onClick={togglePause}>Resume Game</button>
+              <button type="button" className="secondary-btn" onClick={backToMainMenu}>Back to Main Menu</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {hasStarted && isGameOver && (
-        <div className="game-over-panel">
-          <h1 className="game-over-title">GAME OVER</h1>
-          <h2 className="game-over-subtitle">Press Spacebar or Click/Tap to Restart</h2>
+        <div className="game-over-wrap" onClick={restartGame} onTouchStart={restartGame}>
+          <div
+            className="game-over-panel"
+            onClick={(event) => event.stopPropagation()}
+            onTouchStart={(event) => event.stopPropagation()}
+          >
+            <h1 className="game-over-title">GAME OVER</h1>
+            <h2 className="game-over-subtitle">Change difficulty or press Space to restart</h2>
+
+            <div className="option-group game-over-options">
+              <p className="option-label">Difficulty</p>
+              <div className="option-buttons">
+                {Object.entries(DIFFICULTY_CONFIG).map(([key, value]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    className={`option-btn ${difficulty === key ? 'active' : ''}`}
+                    onClick={() => setDifficulty(key)}
+                  >
+                    {value.label}
+                  </button>
+                ))}
+              </div>
+              <p className="menu-best">High Score ({DIFFICULTY_CONFIG[difficulty].label}): {selectedLevelBestScore}</p>
+            </div>
+
+            <div className="menu-actions">
+              <button type="button" className="start-btn" onClick={restartGame}>Restart</button>
+              <button type="button" className="secondary-btn" onClick={backToMainMenu}>Back to Main Menu</button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -388,7 +635,14 @@ export default function App() {
           <Luffy headRotation={headRotation} isHit={isHit} />
         </Suspense>
 
-        {hasStarted && !isGameOver && <Lasers headRotationRef={headRotationRef} onHit={handleHit} />}
+        {hasStarted && !isGameOver && !isPaused && (
+          <Lasers
+            difficulty={difficulty}
+            headRotationRef={headRotationRef}
+            onHit={handleHit}
+            onLaserFired={playLaserSfx}
+          />
+        )}
         
         {/* Adjusted Target to keep the camera close but angled down the path */}
         <OrbitControls makeDefault target={[0, 1.4, -4]} enablePan={false} enableZoom={false} enableRotate={false} />
