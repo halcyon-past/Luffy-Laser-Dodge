@@ -223,6 +223,11 @@ function Lasers({ difficulty, headRotationRef, onHit, onLaserFired }) {
   )
 }
 
+function isMobile() {
+  if (typeof navigator === 'undefined' || typeof navigator.userAgent !== 'string') return false;
+  return /Mobi|Android|iPhone|iPad|iPod|Opera Mini|IEMobile|WPDesktop/i.test(navigator.userAgent);
+}
+
 export default function App() {
   const [hasStarted, setHasStarted] = useState(false)
   const [difficulty, setDifficulty] = useState('medium')
@@ -675,7 +680,10 @@ export default function App() {
             <img className="brand-logo" src="/logo_nobg.png" alt="Luffy Laser Dodge logo" />
             <h1 className="hud-title">{SITE_TITLE}</h1>
           </div>
-          <p className="hud-copy">Use Left/Right Arrows, A/D, or tap screen halves to dodge</p>
+          <p className="hud-copy">
+            {isMobile() ? 'Tap left/right to dodge' : 'Use Left/Right Arrows, A/D, or tap screen halves to dodge'}
+          </p>
+
           <p className={`hud-webcam webcam-${webcamStatus}`}>Camera Mode: {cameraModeEnabled ? webcamStatus : 'disabled'}</p>
           <h2 className={`hud-score ${isHit ? 'is-hit' : ''}`}>Score: {score}</h2>
           <p className="hud-best">Best ({DIFFICULTY_CONFIG[runDifficulty].label}): {runLevelBestScore}</p>

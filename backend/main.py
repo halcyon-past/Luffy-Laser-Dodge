@@ -2,6 +2,8 @@ import asyncio
 import json
 import logging
 import math
+from fastapi.responses import JSONResponse
+
 
 import cv2
 from aiortc import RTCPeerConnection, RTCSessionDescription
@@ -26,6 +28,10 @@ app.add_middleware(
 	allow_methods=['*'],
 	allow_headers=['*'],
 )
+
+@app.get('/health')
+async def health_check():
+		return JSONResponse({'status': 'ok'})
 
 pcs = set()
 relay = MediaRelay()
