@@ -4,10 +4,42 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/logo_nobg.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Luffy Laser Dodge</title>
+    
+    <!-- Primary Meta Tags -->
+    <title>Luffy Laser Dodge | 3D One Piece AI Game</title>
+    <meta name="title" content="Luffy Laser Dodge | 3D One Piece AI Game" />
+    <meta name="description" content="Play Luffy Laser Dodge, a 3D AI-powered browser game! Dodge Kuma's lasers using your webcam and head tracking. An epic reflex challenge for One Piece fans." />
+    <meta name="keywords" content="One Piece, Luffy game, Kuma lasers, AI game, head tracking game, webcam game, Mediapie, React Three Fiber, browser game, anime game, reflex challenge" />
+    <meta name="author" content="Aritro Saha" />
+    <meta name="theme-color" content="#ff9900" />
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://onepiece.aritro.cloud/" />
+    <meta property="og:title" content="Luffy Laser Dodge | 3D One Piece AI Game" />
+    <meta property="og:description" content="Play Luffy Laser Dodge, a 3D AI-powered browser game! Dodge Kuma's lasers using your webcam and head tracking." />
+    <meta property="og:image" content="/logo_nobg.png" />
+
+    <meta property="twitter:card" content="summary_large_image" />
+    <meta property="twitter:url" content="https://onepiece.aritro.cloud/" />
+    <meta property="twitter:title" content="Luffy Laser Dodge | 3D One Piece AI Game" />
+    <meta property="twitter:description" content="Play Luffy Laser Dodge, a 3D AI-powered browser game! Dodge Kuma's lasers using your webcam and head tracking." />
+    <meta property="twitter:image" content="/logo_nobg.png" />
+    
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="/manifest.json" />
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').catch(error => {
+            console.log('ServiceWorker registration failed: ', error);
+          });
+        });
+      }
+    </script>
   </body>
 </html>

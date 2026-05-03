@@ -1,0 +1,22 @@
+{
+  "name": "Luffy Laser Dodge",
+  "short_name": "Luffy Dodge",
+  "description": "Play Luffy Laser Dodge, a 3D AI-powered browser game! Dodge Kuma's lasers using your webcam and head tracking.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#ff9900",
+  "orientation": "landscape",
+  "icons": [
+    {
+      "src": "/logo_nobg.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/logo_nobg.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
