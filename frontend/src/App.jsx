@@ -1,7 +1,8 @@
 import React, { useRef, useState, useEffect, Suspense, useCallback } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
-import { useGLTF, Environment, OrbitControls } from '@react-three/drei'
+import { useGLTF, Environment, OrbitControls, useProgress } from '@react-three/drei'
 import * as THREE from 'three'
+import { FaceDetector, FilesetResolver } from '@mediapipe/tasks-vision'
 import kuma from './assets/kuma.png'
 
 const DIFFICULTY_CONFIG = {
@@ -14,7 +15,6 @@ const BEST_SCORES_KEY = 'luffy-laser-dodge-best-scores-by-difficulty'
 const LEGACY_BEST_SCORE_KEY = 'luffy-laser-dodge-best-score'
 const CAMERA_MODE_KEY = 'luffy-laser-dodge-camera-mode-enabled'
 const SITE_TITLE = 'Luffy Laser Dodge'
-const BACKEND_OFFER_URL = import.meta.env.VITE_BACKEND_OFFER_URL || 'http://localhost:8000/offer'
 
 function Luffy({ headRotation, isHit }) {
   const { scene } = useGLTF('/luffy/scene.gltf')
@@ -282,13 +282,24 @@ export default function App() {
   const [webcamStatus, setWebcamStatus] = useState('idle')
   const [currentDodge, setCurrentDodge] = useState(null)
   
+  const { active: assetsLoading } = useProgress()
+  const isWebcamReady = !cameraModeEnabled || webcamStatus === 'connected' || webcamStatus === 'error' || webcamStatus === 'idle' && !cameraModeEnabled
+  // Treat as ready if not actively loading assets and webcam logic is ready
+  const isReady = !assetsLoading && (cameraModeEnabled ? webcamStatus === 'connected' || webcamStatus === 'disabled' || webcamStatus === 'error' : true)
+  const showLoader = hasStarted && !isReady
+
   const headRotationRef = useRef(0)
   const dodgeResetTimerRef = useRef(null)
   const audioCtxRef = useRef(null)
-  const peerConnectionRef = useRef(null)
-  const dataChannelRef = useRef(null)
   const localStreamRef = useRef(null)
   const previewVideoRef = useRef(null)
+  const faceDetectorRef = useRef(null)
+  const animationFrameRef = useRef(null)
+  const baselineOffsetRef = useRef(null)
+  const prevRelativeOffsetRef = useRef(0)
+  const lastDirectionRef = useRef('center')
+  const lastSentOffsetRef = useRef(0)
+
   const gameStateRef = useRef({ hasStarted: false, isPaused: false, isGameOver: false })
 
   const difficultySettings = DIFFICULTY_CONFIG[runDifficulty]
@@ -349,14 +360,9 @@ export default function App() {
   }, [cameraModeEnabled])
 
   const stopHeadTracking = useCallback((nextStatus = 'idle') => {
-    if (dataChannelRef.current) {
-      dataChannelRef.current.close()
-      dataChannelRef.current = null
-    }
-
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close()
-      peerConnectionRef.current = null
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current)
+      animationFrameRef.current = null
     }
 
     if (localStreamRef.current) {
@@ -367,6 +373,16 @@ export default function App() {
     if (previewVideoRef.current) {
       previewVideoRef.current.srcObject = null
     }
+
+    if (faceDetectorRef.current) {
+      faceDetectorRef.current.close()
+      faceDetectorRef.current = null
+    }
+
+    baselineOffsetRef.current = null
+    prevRelativeOffsetRef.current = 0
+    lastDirectionRef.current = 'center'
+    lastSentOffsetRef.current = 0
 
     setWebcamStatus(nextStatus)
     setHeadRotation(0)
@@ -391,9 +407,8 @@ export default function App() {
 
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
-            width: { ideal: 320, max: 640 },
-            height: { ideal: 240, max: 480 },
-            frameRate: { ideal: 24, max: 30 },
+            width: { ideal: 480 },
+            height: { ideal: 360 },
             facingMode: 'user'
           },
           audio: false
@@ -408,104 +423,105 @@ export default function App() {
 
         if (previewVideoRef.current) {
           previewVideoRef.current.srcObject = stream
+          previewVideoRef.current.onloadedmetadata = () => {
+            previewVideoRef.current.play()
+          }
         }
 
-        const pc = new RTCPeerConnection({
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' }
-          ]
+        const vision = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+        )
+        const faceDetector = await FaceDetector.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
+            delegate: "GPU"
+          },
+          runningMode: "VIDEO",
+          minDetectionConfidence: 0.5
         })
-        peerConnectionRef.current = pc
 
-        const dataChannel = pc.createDataChannel('head-tilt', {
-          ordered: false,
-          maxRetransmits: 0,
-        })
-        dataChannelRef.current = dataChannel
-
-        dataChannel.onopen = () => {
-          setWebcamStatus('connected')
+        if (isCancelled) {
+          faceDetector.close()
+          return
         }
+        
+        faceDetectorRef.current = faceDetector
+        setWebcamStatus('connected')
 
-        dataChannel.onclose = () => {
-          setWebcamStatus('idle')
-        }
+        let lastVideoTime = -1
 
-        dataChannel.onmessage = (event) => {
+        const processFrame = () => {
+          if (isCancelled) return
+
           const currentState = gameStateRef.current
-          if (!currentState.hasStarted || currentState.isPaused || currentState.isGameOver) return
+          if (currentState.hasStarted && !currentState.isPaused && !currentState.isGameOver && previewVideoRef.current && faceDetectorRef.current) {
+            
+            let startTimeMs = performance.now()
+            if (previewVideoRef.current.currentTime !== lastVideoTime) {
+              lastVideoTime = previewVideoRef.current.currentTime
+              
+              const results = faceDetectorRef.current.detectForVideo(previewVideoRef.current, startTimeMs)
+              
+              if (results.detections && results.detections.length > 0) {
+                // Get largest face
+                const bestDetection = results.detections.reduce((prev, current) => {
+                  return (prev.boundingBox.width * prev.boundingBox.height > current.boundingBox.width * current.boundingBox.height) ? prev : current
+                })
 
-          try {
-            const payload = JSON.parse(event.data)
-            if (payload?.type !== 'head_tilt') return
+                // Map 0..1 bounding box X origin to center-based offset
+                // Note: video is mirroring horizontally, so bounding box X is flipped
+                const faceCenterX = bestDetection.boundingBox.originX / previewVideoRef.current.videoWidth + (bestDetection.boundingBox.width / previewVideoRef.current.videoWidth) / 2.0
+                const rawOffset = (faceCenterX - 0.5) * 2.0
 
-            if (dodgeResetTimerRef.current) {
-              clearTimeout(dodgeResetTimerRef.current)
-              dodgeResetTimerRef.current = null
+                if (baselineOffsetRef.current === null) {
+                  baselineOffsetRef.current = rawOffset
+                }
+
+                const relativeOffset = rawOffset - baselineOffsetRef.current
+                const smoothedOffset = (0.5 * prevRelativeOffsetRef.current) + (0.5 * relativeOffset)
+                prevRelativeOffsetRef.current = smoothedOffset
+
+                const threshold = 0.12
+                const hysteresis = 0.03
+                let direction = 'center'
+
+                if (smoothedOffset > (threshold + hysteresis)) {
+                  direction = 'right'
+                } else if (smoothedOffset < -(threshold + hysteresis)) {
+                  direction = 'left'
+                }
+
+                if (Math.abs(smoothedOffset) < threshold) {
+                  baselineOffsetRef.current = (0.99 * baselineOffsetRef.current) + (0.01 * rawOffset)
+                }
+
+                // If dodging state changed significantly, apply
+                if (direction !== lastDirectionRef.current || Math.abs(smoothedOffset - lastSentOffsetRef.current) > 0.05) {
+                  lastDirectionRef.current = direction
+                  lastSentOffsetRef.current = smoothedOffset
+                  
+                  const maxTilt = Math.PI / 2.0
+                  // Opposite sign because mirrored view
+                  const scaledTilt = THREE.MathUtils.clamp(-smoothedOffset * 4.0, -1, 1) * maxTilt
+                  setHeadRotation(scaledTilt)
+                }
+              } else {
+                // Reset slightly
+                prevRelativeOffsetRef.current *= 0.8
+                if (Math.abs(prevRelativeOffsetRef.current) < 0.05) {
+                  setHeadRotation(0)
+                  lastDirectionRef.current = 'center'
+                }
+              }
             }
-
-            if (typeof payload.lean === 'number') {
-              const maxTilt = Math.PI / 2.0
-              const scaledTilt = THREE.MathUtils.clamp(payload.lean * -4.8, -1, 1) * maxTilt
-              setHeadRotation(scaledTilt)
-            } else if (payload.direction === 'left') {
-              setHeadRotation(-Math.PI / 2.0)
-            } else if (payload.direction === 'right') {
-              setHeadRotation(Math.PI / 2.0)
-            } else {
-              setHeadRotation(0)
-            }
-          } catch {
-            // Ignore malformed data-channel payloads.
           }
+          animationFrameRef.current = requestAnimationFrame(processFrame)
         }
+        
+        processFrame()
 
-        stream.getVideoTracks().forEach(track => pc.addTrack(track, stream))
-
-        const offer = await pc.createOffer()
-        await pc.setLocalDescription(offer)
-
-        await new Promise((resolve) => {
-          if (pc.iceGatheringState === 'complete') {
-            resolve()
-            return
-          }
-
-          const onIceGatheringStateChange = () => {
-            if (pc.iceGatheringState === 'complete') {
-              pc.removeEventListener('icegatheringstatechange', onIceGatheringStateChange)
-              resolve()
-            }
-          }
-
-          pc.addEventListener('icegatheringstatechange', onIceGatheringStateChange)
-
-          // Fallback: resolve even if ICE gathering stalls.
-          setTimeout(() => {
-            pc.removeEventListener('icegatheringstatechange', onIceGatheringStateChange)
-            resolve()
-          }, 1200)
-        })
-
-        const response = await fetch(BACKEND_OFFER_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sdp: pc.localDescription?.sdp ?? offer.sdp,
-            type: pc.localDescription?.type ?? offer.type
-          })
-        })
-
-        if (!response.ok) {
-          throw new Error(`Backend offer failed: ${response.status}`)
-        }
-
-        const answer = await response.json()
-        if (!isCancelled) {
-          await pc.setRemoteDescription(answer)
-          setWebcamStatus('connecting')
-        }
-      } catch {
+      } catch (err) {
+        console.error(err)
         if (!isCancelled) {
           stopHeadTracking('error')
         }
@@ -665,11 +681,11 @@ export default function App() {
       if (isGameOver) return
 
       if (e.code === 'KeyP') {
-        togglePause()
+        if (isReady) togglePause()
         return
       }
 
-      if (isPaused) return
+      if (isPaused || !isReady) return
       if (e.repeat) return
       
       if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
@@ -686,12 +702,12 @@ export default function App() {
 
   // Increase score over time if not hit
   useEffect(() => {
-    if (!hasStarted || isPaused || isHit || isGameOver) return
+    if (!hasStarted || isPaused || isHit || isGameOver || !isReady) return
     const interval = setInterval(() => {
       setScore(s => s + difficultySettings.scorePerTick)
     }, 1000)
     return () => clearInterval(interval)
-  }, [difficultySettings.scorePerTick, hasStarted, isPaused, isHit, isGameOver])
+  }, [difficultySettings.scorePerTick, hasStarted, isPaused, isHit, isGameOver, isReady])
 
   useEffect(() => {
     if (!hasStarted || isGameOver) return
@@ -722,7 +738,23 @@ export default function App() {
     <div className={`game-root ${isHit ? 'hit' : ''}`}>
       <img className="kuma-shooter" src={kuma} alt="Kuma aiming from the ridge" />
 
-      {hasStarted && !isGameOver && !isPaused && currentDodge && (
+      {showLoader && (
+        <div className="loader-overlay" style={{
+          position: 'absolute', inset: 0, zIndex: 20, 
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          backgroundColor: 'rgba(0,0,0,0.85)', color: '#fff'
+        }}>
+          <div className="loading-spinner"></div>
+          <h2 style={{marginTop: '20px', fontFamily: 'Georgia, serif', color: '#ffca3a', textShadow: '0 0 10px rgba(255, 202, 58, 0.5)'}}>
+            Game Loading...
+          </h2>
+          <p style={{marginTop: '10px', opacity: 0.8}}>
+            {cameraModeEnabled && webcamStatus !== 'connected' ? 'Initializing AI Tracking Models...' : 'Loading 3D Assets...'}
+          </p>
+        </div>
+      )}
+
+      {hasStarted && isReady && !isGameOver && !isPaused && currentDodge && (
         <div className={`dodge-prompt ${currentDodge}`}>
           {currentDodge === 'left' ? '← DODGE LEFT ' : ' DODGE RIGHT →'}
         </div>
@@ -741,7 +773,7 @@ export default function App() {
           <p className={`hud-webcam webcam-${webcamStatus}`}>Camera Mode: {cameraModeEnabled ? webcamStatus : 'disabled'}</p>
           <h2 className={`hud-score ${isHit ? 'is-hit' : ''}`}>Score: {score}</h2>
           <p className="hud-best">Best ({DIFFICULTY_CONFIG[runDifficulty].label}): {runLevelBestScore}</p>
-          <button type="button" className="pause-btn" onClick={togglePause}>{isPaused ? 'Resume' : 'Pause'}</button>
+          {isReady && <button type="button" className="pause-btn" onClick={togglePause}>{isPaused ? 'Resume' : 'Pause'}</button>}
         </div>
       )}
 
@@ -817,7 +849,7 @@ export default function App() {
         </div>
       )}
 
-      {!isGameOver && !isPaused && hasStarted && (
+      {!isGameOver && !isPaused && hasStarted && isReady && (
         <div
           style={{
             position: 'absolute',
@@ -933,7 +965,7 @@ export default function App() {
           <Luffy headRotation={headRotation} isHit={isHit} />
         </Suspense>
 
-        {hasStarted && !isGameOver && !isPaused && (
+        {hasStarted && isReady && !isGameOver && !isPaused && (
           <Lasers
             difficulty={difficulty}
             headRotationRef={headRotationRef}
