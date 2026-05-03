@@ -91,12 +91,13 @@ function Luffy({ headRotation, isHit }) {
   return <primitive object={scene} position={[0, 0, 0]} rotation={[0, Math.PI, 0]} castShadow receiveShadow />
 }
 
-function Laser({ id, position, speed, onHit, onPassed, headRotationRef }) {
+function Laser({ id, position, speed, requiredDodge, onHit, onPassed, onPassedPlayer, headRotationRef }) {
   const laserRef = useRef()
   const pulseRef = useRef()
   const tipRef = useRef()
   const hasHit = useRef(false)
   const hasPassed = useRef(false)
+  const hasPassedPlayer = useRef(false)
   const phase = useRef(Math.random() * Math.PI * 2)
 
   useFrame((state, delta) => {
@@ -105,11 +106,31 @@ function Laser({ id, position, speed, onHit, onPassed, headRotationRef }) {
 
       // Collision detection plane
       if (!hasHit.current && laserRef.current.position.z > -0.5 && laserRef.current.position.z < 0.5) {
-        // If head is completely upright (not dodged), it's a hit!
-        if (Math.abs(headRotationRef.current) < 0.5) {
-          hasHit.current = true
-          onHit()
+        const rotation = headRotationRef.current
+        let isSafe = false
+        
+        // Check if player moved in the required dodge direction
+        if (requiredDodge === 'left' && rotation < -0.5) {
+          isSafe = true
+        } else if (requiredDodge === 'right' && rotation > 0.5) {
+          isSafe = true
         }
+
+        if (!isSafe) {
+          hasHit.current = true
+          let reason = "You got blasted!"
+          if (Math.abs(rotation) < 0.3) {
+            reason = "You didn't dodge in time!"
+          } else {
+            reason = "You dodged the wrong way!"
+          }
+          onHit(reason)
+        }
+      }
+
+      if (!hasPassedPlayer.current && laserRef.current.position.z > 0.5) {
+        hasPassedPlayer.current = true
+        if (onPassedPlayer) onPassedPlayer(id)
       }
 
       if (!hasPassed.current && laserRef.current.position.z > 12) {
@@ -143,7 +164,7 @@ function Laser({ id, position, speed, onHit, onPassed, headRotationRef }) {
       <mesh>
         <cylinderGeometry args={[0.07, 0.07, 4, 18, 1, true]} />
         <meshBasicMaterial
-          color="#9fefff"
+          color={requiredDodge === 'left' ? '#ffb84d' : '#9fefff'}
           transparent
           opacity={0.42}
           blending={THREE.AdditiveBlending}
@@ -155,7 +176,7 @@ function Laser({ id, position, speed, onHit, onPassed, headRotationRef }) {
       <mesh ref={pulseRef}>
         <cylinderGeometry args={[0.12, 0.12, 4, 20, 1, true]} />
         <meshBasicMaterial
-          color="#4ab7ff"
+          color={requiredDodge === 'left' ? '#ff9900' : '#4ab7ff'}
           transparent
           opacity={0.18}
           blending={THREE.AdditiveBlending}
@@ -167,7 +188,7 @@ function Laser({ id, position, speed, onHit, onPassed, headRotationRef }) {
       <mesh ref={tipRef} position={[0, 2.05, 0]}>
         <sphereGeometry args={[0.11, 16, 16]} />
         <meshBasicMaterial
-          color="#d7f7ff"
+          color={requiredDodge === 'left' ? '#ffdd99' : '#d7f7ff'}
           transparent
           opacity={0.85}
           blending={THREE.AdditiveBlending}
@@ -175,15 +196,24 @@ function Laser({ id, position, speed, onHit, onPassed, headRotationRef }) {
         />
       </mesh>
 
-      <pointLight color="#78d7ff" intensity={2.8} distance={2.8} decay={2} />
+      <pointLight color={requiredDodge === 'left' ? '#ffaa00' : '#78d7ff'} intensity={2.8} distance={2.8} decay={2} />
     </group>
   )
 }
 
-function Lasers({ difficulty, headRotationRef, onHit, onLaserFired }) {
+function Lasers({ difficulty, headRotationRef, onHit, onLaserFired, setCurrentDodge }) {
   const [lasers, setLasers] = useState([])
   const timer = useRef()
   const { spawnInterval, laserSpeed } = DIFFICULTY_CONFIG[difficulty]
+
+  useEffect(() => {
+    const activeLaser = lasers.find(l => !l.passedPlayer)
+    if (activeLaser) {
+      setCurrentDodge(activeLaser.requiredDodge)
+    } else {
+      setCurrentDodge(null)
+    }
+  }, [lasers, setCurrentDodge])
 
   useEffect(() => {
     timer.current = setInterval(() => {
@@ -195,7 +225,9 @@ function Lasers({ difficulty, headRotationRef, onHit, onLaserFired }) {
           // Raised the laser to perfectly align with his head height (face/hat area)
           // instead of his torso, so moving the head actually moves the target out of the way!
           y: 1.7, 
-          z: -25 
+          z: -25,
+          requiredDodge: Math.random() > 0.5 ? 'left' : 'right',
+          passedPlayer: false
         }]
       })
     }, spawnInterval)
@@ -206,6 +238,10 @@ function Lasers({ difficulty, headRotationRef, onHit, onLaserFired }) {
     setLasers(prev => prev.filter(laser => laser.id !== laserId))
   }
 
+  const handleLaserPassedPlayer = (laserId) => {
+    setLasers(prev => prev.map(laser => laser.id === laserId ? { ...laser, passedPlayer: true } : laser))
+  }
+
   return (
     <group>
       {lasers.map(laser => (
@@ -214,8 +250,10 @@ function Lasers({ difficulty, headRotationRef, onHit, onLaserFired }) {
           key={laser.id} 
           position={[laser.x, laser.y, laser.z]} 
           speed={laserSpeed}
+          requiredDodge={laser.requiredDodge}
           onHit={onHit}
           onPassed={handleLaserPassed}
+          onPassedPlayer={handleLaserPassedPlayer}
           headRotationRef={headRotationRef}
         />
       ))}
@@ -239,8 +277,10 @@ export default function App() {
   const [headRotation, setHeadRotation] = useState(0)
   const [isHit, setIsHit] = useState(false)
   const [isGameOver, setIsGameOver] = useState(false)
+  const [gameOverReason, setGameOverReason] = useState('')
   const [score, setScore] = useState(0)
   const [webcamStatus, setWebcamStatus] = useState('idle')
+  const [currentDodge, setCurrentDodge] = useState(null)
   
   const headRotationRef = useRef(0)
   const dodgeResetTimerRef = useRef(null)
@@ -571,6 +611,7 @@ export default function App() {
     setIsGameOver(false)
     setIsPaused(false)
     setIsHit(false)
+    setGameOverReason('')
     setScore(0)
     setHeadRotation(0)
     setRunDifficulty(difficulty)
@@ -586,6 +627,7 @@ export default function App() {
     setIsGameOver(false)
     setIsPaused(false)
     setIsHit(false)
+    setGameOverReason('')
     setScore(0)
     setHeadRotation(0)
     setRunDifficulty(difficulty)
@@ -597,6 +639,7 @@ export default function App() {
     setIsGameOver(false)
     setIsPaused(false)
     setIsHit(false)
+    setGameOverReason('')
     setScore(0)
     setHeadRotation(0)
     setRunDifficulty(difficulty)
@@ -659,11 +702,12 @@ export default function App() {
     })
   }, [hasStarted, isGameOver, runDifficulty, score])
 
-  const handleHit = () => {
+  const handleHit = (reason = "You got hit!") => {
     if (!hasStarted || isGameOver) return
     playHitSfx()
     setIsHit(true)
     setIsGameOver(true)
+    setGameOverReason(reason)
   }
 
   const handleTouchDodge = (rotation, event) => {
@@ -677,6 +721,12 @@ export default function App() {
   return (
     <div className={`game-root ${isHit ? 'hit' : ''}`}>
       <img className="kuma-shooter" src={kuma} alt="Kuma aiming from the ridge" />
+
+      {hasStarted && !isGameOver && !isPaused && currentDodge && (
+        <div className={`dodge-prompt ${currentDodge}`}>
+          {currentDodge === 'left' ? '← DODGE LEFT ' : ' DODGE RIGHT →'}
+        </div>
+      )}
 
       {hasStarted && (
         <div className="hud-panel">
@@ -836,7 +886,8 @@ export default function App() {
             onTouchStart={(event) => event.stopPropagation()}
           >
             <h1 className="game-over-title">GAME OVER</h1>
-            <h2 className="game-over-subtitle">Change difficulty or press Space to restart</h2>
+            <h2 className="game-over-reason">{gameOverReason}</h2>
+            <h3 className="game-over-subtitle">Change difficulty or press Space to restart</h3>
 
             <div className="option-group game-over-options">
               <p className="option-label">Difficulty</p>
@@ -888,6 +939,7 @@ export default function App() {
             headRotationRef={headRotationRef}
             onHit={handleHit}
             onLaserFired={playLaserSfx}
+            setCurrentDodge={setCurrentDodge}
           />
         )}
         
