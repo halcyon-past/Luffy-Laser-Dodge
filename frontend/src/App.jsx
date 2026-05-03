@@ -1,270 +1,20 @@
-import React, { useRef, useState, useEffect, Suspense, useCallback } from 'react'
-import { Canvas, useFrame } from '@react-three/fiber'
-import { useGLTF, Environment, OrbitControls, useProgress } from '@react-three/drei'
-import * as THREE from 'three'
-import { FaceDetector, FilesetResolver } from '@mediapipe/tasks-vision'
+import React, { useRef, useState, useEffect, Suspense } from 'react'
+import { Canvas } from '@react-three/fiber'
+import { Environment, OrbitControls, useProgress, useGLTF } from '@react-three/drei'
+
+import { DIFFICULTY_CONFIG, BEST_SCORES_KEY, LEGACY_BEST_SCORE_KEY, CAMERA_MODE_KEY } from './config/gameConfig'
+import { useAudio } from './hooks/useAudio'
+import { useHeadTracking } from './hooks/useHeadTracking'
+
+import Luffy from './components/game/Luffy'
+import Lasers from './components/game/Lasers'
+import Loader from './components/ui/Loader'
+import HUD from './components/ui/HUD'
+import Menu from './components/ui/Menu'
+import PauseMenu from './components/ui/PauseMenu'
+import GameOver from './components/ui/GameOver'
+
 import kuma from './assets/kuma.png'
-
-const DIFFICULTY_CONFIG = {
-  easy: { label: 'Easy', spawnInterval: 1500, laserSpeed: 14, scorePerTick: 8 },
-  medium: { label: 'Medium', spawnInterval: 1200, laserSpeed: 20, scorePerTick: 10 },
-  hard: { label: 'Hard', spawnInterval: 880, laserSpeed: 26, scorePerTick: 14 }
-}
-
-const BEST_SCORES_KEY = 'luffy-laser-dodge-best-scores-by-difficulty'
-const LEGACY_BEST_SCORE_KEY = 'luffy-laser-dodge-best-score'
-const CAMERA_MODE_KEY = 'luffy-laser-dodge-camera-mode-enabled'
-const SITE_TITLE = 'Luffy Laser Dodge'
-
-function Luffy({ headRotation, isHit }) {
-  const { scene } = useGLTF('/luffy/scene.gltf')
-  const initialRotation = useRef(null)
-  const armPoseTargets = useRef([])
-
-  useEffect(() => {
-    const poseConfigs = [
-      {
-        names: ['arm *side* shoulder 2.L_224', 'arm *side* shoulder 1.L_245'],
-        euler: new THREE.Euler(0.12, 0, 1.2)
-      },
-      {
-        names: ['arm *side* shoulder 2.R_252', 'arm *side* shoulder 1.R_273'],
-        euler: new THREE.Euler(0.12, 0, -1.2)
-      },
-      {
-        names: ['arm *side* elbow.L_220'],
-        euler: new THREE.Euler(0, 0, 0.22)
-      },
-      {
-        names: ['arm *side* elbow.R_248'],
-        euler: new THREE.Euler(0, 0, -0.22)
-      }
-    ]
-
-    armPoseTargets.current = poseConfigs
-      .map(({ names, euler }) => {
-        const bone = names.map(name => scene.getObjectByName(name)).find(Boolean)
-        if (!bone) return null
-
-        const base = bone.quaternion.clone()
-        const offset = new THREE.Quaternion().setFromEuler(euler)
-        const target = base.clone().multiply(offset)
-
-        return { bone, target }
-      })
-      .filter(Boolean)
-  }, [scene])
-
-  useFrame(() => {
-    const targetBone = scene.getObjectByName('head_neck_lower_217') || scene.getObjectByName('head neck lower_217') || scene.getObjectByName('head_neck_upper_216') || scene.getObjectByName('head neck upper_216')
-    if (targetBone) {
-      if (initialRotation.current === null) {
-        // Save the neutral rest pose of the neck
-        initialRotation.current = targetBone.quaternion.clone()
-      }
-      const baseRotation = new THREE.Euler().setFromQuaternion(initialRotation.current)
-      // Z-axis rotation rolls the ear to the shoulder, leaning the head out of the center path
-      const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(baseRotation.x, baseRotation.y, baseRotation.z + headRotation))
-      targetBone.quaternion.slerp(q, 0.9)
-    }
-
-    // Keep both arms in a relaxed down pose instead of the default T-pose.
-    armPoseTargets.current.forEach(({ bone, target }) => {
-      bone.quaternion.slerp(target, 0.12)
-    })
-  })
-
-  // Flash red when hit
-  useEffect(() => {
-    scene.traverse((child) => {
-      if (child.isMesh) {
-        if (isHit) {
-          child.material.color.setHex(0xff0000)
-        } else {
-          child.material.color.setHex(0xffffff)
-        }
-      }
-    })
-  }, [isHit, scene])
-
-  // Position at origin, facing away from camera
-  return <primitive object={scene} position={[0, 0, 0]} rotation={[0, Math.PI, 0]} castShadow receiveShadow />
-}
-
-function Laser({ id, position, speed, requiredDodge, onHit, onPassed, onPassedPlayer, headRotationRef }) {
-  const laserRef = useRef()
-  const pulseRef = useRef()
-  const tipRef = useRef()
-  const hasHit = useRef(false)
-  const hasPassed = useRef(false)
-  const hasPassedPlayer = useRef(false)
-  const phase = useRef(Math.random() * Math.PI * 2)
-
-  useFrame((state, delta) => {
-    if (laserRef.current) {
-      laserRef.current.position.z += delta * speed
-
-      // Collision detection plane
-      if (!hasHit.current && laserRef.current.position.z > -0.5 && laserRef.current.position.z < 0.5) {
-        const rotation = headRotationRef.current
-        let isSafe = false
-        
-        // Check if player moved in the required dodge direction
-        if (requiredDodge === 'left' && rotation < -0.5) {
-          isSafe = true
-        } else if (requiredDodge === 'right' && rotation > 0.5) {
-          isSafe = true
-        }
-
-        if (!isSafe) {
-          hasHit.current = true
-          let reason = "You got blasted!"
-          if (Math.abs(rotation) < 0.3) {
-            reason = "You didn't dodge in time!"
-          } else {
-            reason = "You dodged the wrong way!"
-          }
-          onHit(reason)
-        }
-      }
-
-      if (!hasPassedPlayer.current && laserRef.current.position.z > 0.5) {
-        hasPassedPlayer.current = true
-        if (onPassedPlayer) onPassedPlayer(id)
-      }
-
-      if (!hasPassed.current && laserRef.current.position.z > 12) {
-        hasPassed.current = true
-        onPassed(id)
-      }
-
-      const pulse = 1 + Math.sin(state.clock.elapsedTime * 24 + phase.current) * 0.18
-      if (pulseRef.current) {
-        pulseRef.current.scale.set(pulse, 1, pulse)
-      }
-      if (tipRef.current) {
-        tipRef.current.scale.setScalar(1 + Math.sin(state.clock.elapsedTime * 30 + phase.current) * 0.12)
-      }
-    }
-  })
-
-  return (
-    <group ref={laserRef} position={position} rotation={[Math.PI / 2, 0, 0]}>
-      <mesh>
-        <cylinderGeometry args={[0.026, 0.026, 4, 14, 1, true]} />
-        <meshBasicMaterial
-          color="#ffffff"
-          transparent
-          opacity={0.92}
-          blending={THREE.AdditiveBlending}
-          depthWrite={false}
-        />
-      </mesh>
-
-      <mesh>
-        <cylinderGeometry args={[0.07, 0.07, 4, 18, 1, true]} />
-        <meshBasicMaterial
-          color={requiredDodge === 'left' ? '#ffb84d' : '#9fefff'}
-          transparent
-          opacity={0.42}
-          blending={THREE.AdditiveBlending}
-          depthWrite={false}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
-
-      <mesh ref={pulseRef}>
-        <cylinderGeometry args={[0.12, 0.12, 4, 20, 1, true]} />
-        <meshBasicMaterial
-          color={requiredDodge === 'left' ? '#ff9900' : '#4ab7ff'}
-          transparent
-          opacity={0.18}
-          blending={THREE.AdditiveBlending}
-          depthWrite={false}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
-
-      <mesh ref={tipRef} position={[0, 2.05, 0]}>
-        <sphereGeometry args={[0.11, 16, 16]} />
-        <meshBasicMaterial
-          color={requiredDodge === 'left' ? '#ffdd99' : '#d7f7ff'}
-          transparent
-          opacity={0.85}
-          blending={THREE.AdditiveBlending}
-          depthWrite={false}
-        />
-      </mesh>
-
-      <pointLight color={requiredDodge === 'left' ? '#ffaa00' : '#78d7ff'} intensity={2.8} distance={2.8} decay={2} />
-    </group>
-  )
-}
-
-function Lasers({ difficulty, headRotationRef, onHit, onLaserFired, setCurrentDodge }) {
-  const [lasers, setLasers] = useState([])
-  const timer = useRef()
-  const { spawnInterval, laserSpeed } = DIFFICULTY_CONFIG[difficulty]
-
-  useEffect(() => {
-    const activeLaser = lasers.find(l => !l.passedPlayer)
-    if (activeLaser) {
-      setCurrentDodge(activeLaser.requiredDodge)
-    } else {
-      setCurrentDodge(null)
-    }
-  }, [lasers, setCurrentDodge])
-
-  useEffect(() => {
-    timer.current = setInterval(() => {
-      onLaserFired()
-      setLasers(prev => {
-        return [...prev, {
-          id: Date.now(),
-          x: 0, 
-          // Raised the laser to perfectly align with his head height (face/hat area)
-          // instead of his torso, so moving the head actually moves the target out of the way!
-          y: 1.7, 
-          z: -25,
-          requiredDodge: Math.random() > 0.5 ? 'left' : 'right',
-          passedPlayer: false
-        }]
-      })
-    }, spawnInterval)
-    return () => clearInterval(timer.current)
-  }, [onLaserFired, spawnInterval])
-
-  const handleLaserPassed = (laserId) => {
-    setLasers(prev => prev.filter(laser => laser.id !== laserId))
-  }
-
-  const handleLaserPassedPlayer = (laserId) => {
-    setLasers(prev => prev.map(laser => laser.id === laserId ? { ...laser, passedPlayer: true } : laser))
-  }
-
-  return (
-    <group>
-      {lasers.map(laser => (
-        <Laser 
-          id={laser.id}
-          key={laser.id} 
-          position={[laser.x, laser.y, laser.z]} 
-          speed={laserSpeed}
-          requiredDodge={laser.requiredDodge}
-          onHit={onHit}
-          onPassed={handleLaserPassed}
-          onPassedPlayer={handleLaserPassedPlayer}
-          headRotationRef={headRotationRef}
-        />
-      ))}
-    </group>
-  )
-}
-
-function isMobile() {
-  if (typeof navigator === 'undefined' || typeof navigator.userAgent !== 'string') return false;
-  return /Mobi|Android|iPhone|iPad|iPod|Opera Mini|IEMobile|WPDesktop/i.test(navigator.userAgent);
-}
 
 export default function App() {
   const [hasStarted, setHasStarted] = useState(false)
@@ -274,33 +24,26 @@ export default function App() {
   const [cameraModeEnabled, setCameraModeEnabled] = useState(false)
   const [bestScores, setBestScores] = useState({ easy: 0, medium: 0, hard: 0 })
   const [isPaused, setIsPaused] = useState(false)
-  const [headRotation, setHeadRotation] = useState(0)
   const [isHit, setIsHit] = useState(false)
   const [isGameOver, setIsGameOver] = useState(false)
   const [gameOverReason, setGameOverReason] = useState('')
   const [score, setScore] = useState(0)
-  const [webcamStatus, setWebcamStatus] = useState('idle')
   const [currentDodge, setCurrentDodge] = useState(null)
   
   const { active: assetsLoading } = useProgress()
-  const isWebcamReady = !cameraModeEnabled || webcamStatus === 'connected' || webcamStatus === 'error' || webcamStatus === 'idle' && !cameraModeEnabled
-  // Treat as ready if not actively loading assets and webcam logic is ready
+  
+  const { ensureAudioContext, playLaserSfx, playHitSfx } = useAudio(soundEnabled)
+
+  const { webcamStatus, headRotation, setHeadRotation, previewVideoRef } = useHeadTracking({
+    cameraModeEnabled,
+    gameState: { hasStarted, isPaused, isGameOver }
+  })
+  
   const isReady = !assetsLoading && (cameraModeEnabled ? webcamStatus === 'connected' || webcamStatus === 'disabled' || webcamStatus === 'error' : true)
   const showLoader = hasStarted && !isReady
 
   const headRotationRef = useRef(0)
   const dodgeResetTimerRef = useRef(null)
-  const audioCtxRef = useRef(null)
-  const localStreamRef = useRef(null)
-  const previewVideoRef = useRef(null)
-  const faceDetectorRef = useRef(null)
-  const animationFrameRef = useRef(null)
-  const baselineOffsetRef = useRef(null)
-  const prevRelativeOffsetRef = useRef(0)
-  const lastDirectionRef = useRef('center')
-  const lastSentOffsetRef = useRef(0)
-
-  const gameStateRef = useRef({ hasStarted: false, isPaused: false, isGameOver: false })
 
   const difficultySettings = DIFFICULTY_CONFIG[runDifficulty]
   const selectedLevelBestScore = bestScores[difficulty] || 0
@@ -309,10 +52,6 @@ export default function App() {
   useEffect(() => {
     headRotationRef.current = headRotation
   }, [headRotation])
-
-  useEffect(() => {
-    gameStateRef.current = { hasStarted, isPaused, isGameOver }
-  }, [hasStarted, isPaused, isGameOver])
 
   useEffect(() => {
     const rawBestScores = localStorage.getItem(BEST_SCORES_KEY)
@@ -326,7 +65,7 @@ export default function App() {
           hard: Number.isFinite(parsedBestScores?.hard) ? parsedBestScores.hard : prev.hard
         }))
       } catch {
-        // Fall back to legacy single-score migration below.
+        // Fall back
       }
     } else {
       const rawLegacyScore = localStorage.getItem(LEGACY_BEST_SCORE_KEY)
@@ -345,9 +84,6 @@ export default function App() {
       if (dodgeResetTimerRef.current) {
         clearTimeout(dodgeResetTimerRef.current)
       }
-      if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
-        audioCtxRef.current.close()
-      }
     }
   }, [])
 
@@ -359,259 +95,9 @@ export default function App() {
     localStorage.setItem(CAMERA_MODE_KEY, String(cameraModeEnabled))
   }, [cameraModeEnabled])
 
-  const stopHeadTracking = useCallback((nextStatus = 'idle') => {
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current)
-      animationFrameRef.current = null
-    }
-
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(track => track.stop())
-      localStreamRef.current = null
-    }
-
-    if (previewVideoRef.current) {
-      previewVideoRef.current.srcObject = null
-    }
-
-    if (faceDetectorRef.current) {
-      faceDetectorRef.current.close()
-      faceDetectorRef.current = null
-    }
-
-    baselineOffsetRef.current = null
-    prevRelativeOffsetRef.current = 0
-    lastDirectionRef.current = 'center'
-    lastSentOffsetRef.current = 0
-
-    setWebcamStatus(nextStatus)
-    setHeadRotation(0)
-  }, [])
-
-  useEffect(() => {
-    if (!hasStarted) {
-      stopHeadTracking('idle')
-      return
-    }
-
-    if (!cameraModeEnabled) {
-      stopHeadTracking('disabled')
-      return
-    }
-
-    let isCancelled = false
-
-    const setupHeadTracking = async () => {
-      try {
-        setWebcamStatus('connecting')
-
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            width: { ideal: 480 },
-            height: { ideal: 360 },
-            facingMode: 'user'
-          },
-          audio: false
-        })
-
-        if (isCancelled) {
-          stream.getTracks().forEach(track => track.stop())
-          return
-        }
-
-        localStreamRef.current = stream
-
-        if (previewVideoRef.current) {
-          previewVideoRef.current.srcObject = stream
-          previewVideoRef.current.onloadedmetadata = () => {
-            previewVideoRef.current.play()
-          }
-        }
-
-        const vision = await FilesetResolver.forVisionTasks(
-          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
-        )
-        const faceDetector = await FaceDetector.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
-            delegate: "CPU"
-          },
-          runningMode: "VIDEO",
-          minDetectionConfidence: 0.5
-        })
-
-        if (isCancelled) {
-          faceDetector.close()
-          return
-        }
-        
-        faceDetectorRef.current = faceDetector
-        setWebcamStatus('connected')
-
-        let lastVideoTime = -1
-
-        const processFrame = () => {
-          if (isCancelled) return
-
-          const currentState = gameStateRef.current
-          if (currentState.hasStarted && !currentState.isPaused && !currentState.isGameOver && previewVideoRef.current && faceDetectorRef.current) {
-            
-            let startTimeMs = performance.now()
-            if (previewVideoRef.current.currentTime !== lastVideoTime) {
-              lastVideoTime = previewVideoRef.current.currentTime
-              
-              const results = faceDetectorRef.current.detectForVideo(previewVideoRef.current, startTimeMs)
-              
-              if (results.detections && results.detections.length > 0) {
-                // Get largest face
-                const bestDetection = results.detections.reduce((prev, current) => {
-                  return (prev.boundingBox.width * prev.boundingBox.height > current.boundingBox.width * current.boundingBox.height) ? prev : current
-                })
-
-                // Map 0..1 bounding box X origin to center-based offset
-                // Note: video is mirroring horizontally, so bounding box X is flipped
-                const faceCenterX = bestDetection.boundingBox.originX / previewVideoRef.current.videoWidth + (bestDetection.boundingBox.width / previewVideoRef.current.videoWidth) / 2.0
-                const rawOffset = (faceCenterX - 0.5) * 2.0
-
-                if (baselineOffsetRef.current === null) {
-                  baselineOffsetRef.current = rawOffset
-                }
-
-                const relativeOffset = rawOffset - baselineOffsetRef.current
-                const smoothedOffset = (0.5 * prevRelativeOffsetRef.current) + (0.5 * relativeOffset)
-                prevRelativeOffsetRef.current = smoothedOffset
-
-                const threshold = 0.12
-                const hysteresis = 0.03
-                let direction = 'center'
-
-                if (smoothedOffset > (threshold + hysteresis)) {
-                  direction = 'right'
-                } else if (smoothedOffset < -(threshold + hysteresis)) {
-                  direction = 'left'
-                }
-
-                if (Math.abs(smoothedOffset) < threshold) {
-                  baselineOffsetRef.current = (0.99 * baselineOffsetRef.current) + (0.01 * rawOffset)
-                }
-
-                // If dodging state changed significantly, apply
-                if (direction !== lastDirectionRef.current || Math.abs(smoothedOffset - lastSentOffsetRef.current) > 0.05) {
-                  lastDirectionRef.current = direction
-                  lastSentOffsetRef.current = smoothedOffset
-                  
-                  const maxTilt = Math.PI / 2.0
-                  // Opposite sign because mirrored view
-                  const scaledTilt = THREE.MathUtils.clamp(-smoothedOffset * 4.0, -1, 1) * maxTilt
-                  setHeadRotation(scaledTilt)
-                }
-              } else {
-                // Reset slightly
-                prevRelativeOffsetRef.current *= 0.8
-                if (Math.abs(prevRelativeOffsetRef.current) < 0.05) {
-                  setHeadRotation(0)
-                  lastDirectionRef.current = 'center'
-                }
-              }
-            }
-          }
-          animationFrameRef.current = requestAnimationFrame(processFrame)
-        }
-        
-        processFrame()
-
-      } catch (err) {
-        console.error(err)
-        if (!isCancelled) {
-          stopHeadTracking('error')
-        }
-      }
-    }
-
-    setupHeadTracking()
-
-    return () => {
-      isCancelled = true
-      stopHeadTracking('idle')
-    }
-  }, [cameraModeEnabled, hasStarted, stopHeadTracking])
-
-  const ensureAudioContext = useCallback(async () => {
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext
-    if (!AudioContextClass) return null
-
-    if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
-      audioCtxRef.current = new AudioContextClass()
-    }
-
-    if (audioCtxRef.current.state === 'suspended') {
-      await audioCtxRef.current.resume()
-    }
-
-    return audioCtxRef.current
-  }, [])
-
-  const playLaserSfx = useCallback(async () => {
-    if (!soundEnabled) return
-    const ctx = await ensureAudioContext()
-    if (!ctx) return
-
-    const now = ctx.currentTime
-    const osc = ctx.createOscillator()
-    const gain = ctx.createGain()
-    const filter = ctx.createBiquadFilter()
-
-    osc.type = 'sawtooth'
-    osc.frequency.setValueAtTime(900, now)
-    osc.frequency.exponentialRampToValueAtTime(560, now + 0.09)
-
-    filter.type = 'lowpass'
-    filter.frequency.setValueAtTime(1800, now)
-
-    gain.gain.setValueAtTime(0.0001, now)
-    gain.gain.exponentialRampToValueAtTime(0.04, now + 0.015)
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.1)
-
-    osc.connect(filter)
-    filter.connect(gain)
-    gain.connect(ctx.destination)
-
-    osc.start(now)
-    osc.stop(now + 0.11)
-  }, [ensureAudioContext, soundEnabled])
-
-  const playHitSfx = useCallback(async () => {
-    if (!soundEnabled) return
-    const ctx = await ensureAudioContext()
-    if (!ctx) return
-
-    const now = ctx.currentTime
-    const osc = ctx.createOscillator()
-    const gain = ctx.createGain()
-
-    osc.type = 'triangle'
-    osc.frequency.setValueAtTime(260, now)
-    osc.frequency.exponentialRampToValueAtTime(90, now + 0.25)
-
-    gain.gain.setValueAtTime(0.0001, now)
-    gain.gain.exponentialRampToValueAtTime(0.12, now + 0.02)
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.26)
-
-    osc.connect(gain)
-    gain.connect(ctx.destination)
-
-    osc.start(now)
-    osc.stop(now + 0.28)
-  }, [ensureAudioContext, soundEnabled])
-
   const triggerDodge = (rotation) => {
     setHeadRotation(rotation)
-
-    if (dodgeResetTimerRef.current) {
-      clearTimeout(dodgeResetTimerRef.current)
-    }
-
-    // Auto-center after a single dodge window, even if the key is held.
+    if (dodgeResetTimerRef.current) clearTimeout(dodgeResetTimerRef.current)
     dodgeResetTimerRef.current = setTimeout(() => {
       setHeadRotation(0)
       dodgeResetTimerRef.current = null
@@ -619,11 +105,7 @@ export default function App() {
   }
 
   const restartGame = () => {
-    if (dodgeResetTimerRef.current) {
-      clearTimeout(dodgeResetTimerRef.current)
-      dodgeResetTimerRef.current = null
-    }
-
+    if (dodgeResetTimerRef.current) clearTimeout(dodgeResetTimerRef.current)
     setIsGameOver(false)
     setIsPaused(false)
     setIsHit(false)
@@ -634,11 +116,7 @@ export default function App() {
   }
 
   const backToMainMenu = () => {
-    if (dodgeResetTimerRef.current) {
-      clearTimeout(dodgeResetTimerRef.current)
-      dodgeResetTimerRef.current = null
-    }
-
+    if (dodgeResetTimerRef.current) clearTimeout(dodgeResetTimerRef.current)
     setHasStarted(false)
     setIsGameOver(false)
     setIsPaused(false)
@@ -668,44 +146,24 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if (!hasStarted && (e.code === 'Space' || e.code === 'Enter')) {
-        startGame()
-        return
-      }
+      if (!hasStarted && (e.code === 'Space' || e.code === 'Enter')) { startGame(); return; }
+      if (isGameOver && e.code === 'Space') { restartGame(); return; }
+      if (!hasStarted || isGameOver) return
 
-      if (isGameOver && e.code === 'Space') {
-        restartGame()
-        return
-      }
-      if (!hasStarted) return
-      if (isGameOver) return
+      if (e.code === 'KeyP') { if (isReady) togglePause(); return; }
 
-      if (e.code === 'KeyP') {
-        if (isReady) togglePause()
-        return
-      }
-
-      if (isPaused || !isReady) return
-      if (e.repeat) return
+      if (isPaused || !isReady || e.repeat) return
       
-      if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
-        triggerDodge(-Math.PI / 2.0)
-      } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
-        triggerDodge(Math.PI / 2.0)
-      }
+      if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') triggerDodge(-Math.PI / 2.0)
+      else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') triggerDodge(Math.PI / 2.0)
     }
     window.addEventListener('keydown', handleKeyDown)
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [hasStarted, isGameOver, isPaused])
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [hasStarted, isGameOver, isPaused, isReady])
 
-  // Increase score over time if not hit
   useEffect(() => {
     if (!hasStarted || isPaused || isHit || isGameOver || !isReady) return
-    const interval = setInterval(() => {
-      setScore(s => s + difficultySettings.scorePerTick)
-    }, 1000)
+    const interval = setInterval(() => setScore(s => s + difficultySettings.scorePerTick), 1000)
     return () => clearInterval(interval)
   }, [difficultySettings.scorePerTick, hasStarted, isPaused, isHit, isGameOver, isReady])
 
@@ -728,9 +186,7 @@ export default function App() {
 
   const handleTouchDodge = (rotation, event) => {
     if (!hasStarted || isPaused || isGameOver) return
-    if (event.cancelable) {
-      event.preventDefault()
-    }
+    if (event.cancelable) event.preventDefault()
     triggerDodge(rotation)
   }
 
@@ -738,21 +194,7 @@ export default function App() {
     <div className={`game-root ${isHit ? 'hit' : ''}`}>
       <img className="kuma-shooter" src={kuma} alt="Kuma aiming from the ridge" />
 
-      {showLoader && (
-        <div className="loader-overlay" style={{
-          position: 'absolute', inset: 0, zIndex: 20, 
-          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-          backgroundColor: 'rgba(0,0,0,0.85)', color: '#fff'
-        }}>
-          <div className="loading-spinner"></div>
-          <h2 style={{marginTop: '20px', fontFamily: 'Georgia, serif', color: '#ffca3a', textShadow: '0 0 10px rgba(255, 202, 58, 0.5)'}}>
-            Game Loading...
-          </h2>
-          <p style={{marginTop: '10px', opacity: 0.8}}>
-            {cameraModeEnabled && webcamStatus !== 'connected' ? 'Initializing AI Tracking Models...' : 'Loading 3D Assets...'}
-          </p>
-        </div>
-      )}
+      {showLoader && <Loader cameraModeEnabled={cameraModeEnabled} webcamStatus={webcamStatus} />}
 
       {hasStarted && isReady && !isGameOver && !isPaused && currentDodge && (
         <div className={`dodge-prompt ${currentDodge}`}>
@@ -761,221 +203,44 @@ export default function App() {
       )}
 
       {hasStarted && (
-        <div className="hud-panel">
-          <div className="brand-row">
-            <img className="brand-logo" src="/logo_nobg.png" alt="Luffy Laser Dodge logo" />
-            <h1 className="hud-title">{SITE_TITLE}</h1>
-          </div>
-          <p className="hud-copy">
-            {isMobile() ? 'Tap left/right to dodge' : 'Use Left/Right Arrows, A/D, or tap screen halves to dodge'}
-          </p>
-
-          <p className={`hud-webcam webcam-${webcamStatus}`}>Camera Mode: {cameraModeEnabled ? webcamStatus : 'disabled'}</p>
-          <h2 className={`hud-score ${isHit ? 'is-hit' : ''}`}>Score: {score}</h2>
-          <p className="hud-best">Best ({DIFFICULTY_CONFIG[runDifficulty].label}): {runLevelBestScore}</p>
-          {isReady && <button type="button" className="pause-btn" onClick={togglePause}>{isPaused ? 'Resume' : 'Pause'}</button>}
-        </div>
+        <HUD score={score} isHit={isHit} runDifficulty={runDifficulty} runLevelBestScore={runLevelBestScore} cameraModeEnabled={cameraModeEnabled} webcamStatus={webcamStatus} isReady={isReady} isPaused={isPaused} togglePause={togglePause} />
       )}
 
       {hasStarted && cameraModeEnabled && (
         <div className="webcam-preview-wrap">
-          <video
-            ref={previewVideoRef}
-            className="webcam-preview"
-            autoPlay
-            muted
-            playsInline
-          />
+          <video ref={previewVideoRef} className="webcam-preview" autoPlay muted playsInline />
         </div>
       )}
 
       {!hasStarted && (
-        <div className="start-menu">
-          <div className="start-card">
-            <img className="menu-logo" src="/logo_nobg.png" alt="Luffy Laser Dodge logo" />
-            <p className="menu-tag">3D reflex challenge</p>
-            <h1 className="menu-title">{SITE_TITLE}</h1>
-            <p className="menu-copy">Dodge Kuma's laser barrage and survive as long as possible.</p>
-
-            <div className="menu-options">
-              <div className="option-group">
-                <p className="option-label">Difficulty</p>
-                <div className="option-buttons">
-                  {Object.entries(DIFFICULTY_CONFIG).map(([key, value]) => (
-                    <button
-                      key={key}
-                      type="button"
-                      className={`option-btn ${difficulty === key ? 'active' : ''}`}
-                      onClick={() => setDifficulty(key)}
-                    >
-                      {value.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="option-group">
-                <p className="option-label">Sound Effects</p>
-                <button
-                  type="button"
-                  className={`option-btn sound-toggle ${soundEnabled ? 'active' : ''}`}
-                  onClick={() => setSoundEnabled(prev => !prev)}
-                >
-                  {soundEnabled ? 'On' : 'Off'}
-                </button>
-              </div>
-
-              <div className="option-group">
-                <p className="option-label">Camera Mode</p>
-                <button
-                  type="button"
-                  className={`option-btn sound-toggle ${cameraModeEnabled ? 'active' : ''}`}
-                  onClick={() => setCameraModeEnabled(prev => !prev)}
-                >
-                  {cameraModeEnabled ? 'On' : 'Off'}
-                </button>
-              </div>
-
-              <p className="menu-best">High Score ({DIFFICULTY_CONFIG[difficulty].label}): {selectedLevelBestScore}</p>
-            </div>
-
-            <button type="button" className="start-btn" onClick={startGame}>Start Game</button>
-            <p className="menu-hint">Press Space or Enter to start</p>
-            <p className="menu-credits">
-              Created by Aritro Saha •{' '}
-              <a href="https://aritro.cloud" target="_blank" rel="noreferrer">aritro.cloud</a>
-            </p>
-          </div>
-        </div>
+        <Menu difficulty={difficulty} setDifficulty={setDifficulty} soundEnabled={soundEnabled} setSoundEnabled={setSoundEnabled} cameraModeEnabled={cameraModeEnabled} setCameraModeEnabled={setCameraModeEnabled} selectedLevelBestScore={selectedLevelBestScore} startGame={startGame} />
       )}
 
       {!isGameOver && !isPaused && hasStarted && isReady && (
-        <div
-          style={{
-            position: 'absolute',
-            inset: 0,
-            zIndex: 8,
-            display: 'flex',
-            touchAction: 'none'
-          }}
-        >
-          <div
-            style={{ flex: 1 }}
-            onTouchStart={(event) => handleTouchDodge(-Math.PI / 2.0, event)}
-          />
-          <div
-            style={{ flex: 1 }}
-            onTouchStart={(event) => handleTouchDodge(Math.PI / 2.0, event)}
-          />
+        <div style={{ position: 'absolute', inset: 0, zIndex: 8, display: 'flex', touchAction: 'none' }}>
+          <div style={{ flex: 1 }} onTouchStart={(event) => handleTouchDodge(-Math.PI / 2.0, event)} />
+          <div style={{ flex: 1 }} onTouchStart={(event) => handleTouchDodge(Math.PI / 2.0, event)} />
         </div>
       )}
 
       {hasStarted && !isGameOver && isPaused && (
-        <div className="pause-overlay" onClick={togglePause} onTouchStart={togglePause}>
-          <div
-            className="pause-panel"
-            onClick={(event) => event.stopPropagation()}
-            onTouchStart={(event) => event.stopPropagation()}
-          >
-            <h2 className="pause-title">Paused</h2>
-            <p className="pause-copy">Adjust your sound settings and resume when ready.</p>
-
-            <div className="option-group">
-              <p className="option-label">Sound Effects</p>
-              <button
-                type="button"
-                className={`option-btn sound-toggle ${soundEnabled ? 'active' : ''}`}
-                onClick={() => setSoundEnabled(prev => !prev)}
-              >
-                {soundEnabled ? 'On' : 'Off'}
-              </button>
-            </div>
-
-            <div className="option-group">
-              <p className="option-label">Camera Mode</p>
-              <button
-                type="button"
-                className={`option-btn sound-toggle ${cameraModeEnabled ? 'active' : ''}`}
-                onClick={() => setCameraModeEnabled(prev => !prev)}
-              >
-                {cameraModeEnabled ? 'On' : 'Off'}
-              </button>
-            </div>
-
-            <div className="menu-actions">
-              <button type="button" className="start-btn" onClick={togglePause}>Resume Game</button>
-              <button type="button" className="secondary-btn" onClick={backToMainMenu}>Back to Main Menu</button>
-            </div>
-          </div>
-        </div>
+        <PauseMenu togglePause={togglePause} soundEnabled={soundEnabled} setSoundEnabled={setSoundEnabled} cameraModeEnabled={cameraModeEnabled} setCameraModeEnabled={setCameraModeEnabled} backToMainMenu={backToMainMenu} />
       )}
 
       {hasStarted && isGameOver && (
-        <div className="game-over-wrap" onClick={restartGame} onTouchStart={restartGame}>
-          <div
-            className="game-over-panel"
-            onClick={(event) => event.stopPropagation()}
-            onTouchStart={(event) => event.stopPropagation()}
-          >
-            <h1 className="game-over-title">GAME OVER</h1>
-            <h2 className="game-over-reason">{gameOverReason}</h2>
-            <h3 className="game-over-subtitle">Change difficulty or press Space to restart</h3>
-
-            <div className="option-group game-over-options">
-              <p className="option-label">Difficulty</p>
-              <div className="option-buttons">
-                {Object.entries(DIFFICULTY_CONFIG).map(([key, value]) => (
-                  <button
-                    key={key}
-                    type="button"
-                    className={`option-btn ${difficulty === key ? 'active' : ''}`}
-                    onClick={() => setDifficulty(key)}
-                  >
-                    {value.label}
-                  </button>
-                ))}
-              </div>
-
-              <p className="option-label">Camera Mode</p>
-              <button
-                type="button"
-                className={`option-btn sound-toggle ${cameraModeEnabled ? 'active' : ''}`}
-                onClick={() => setCameraModeEnabled(prev => !prev)}
-              >
-                {cameraModeEnabled ? 'On' : 'Off'}
-              </button>
-
-              <p className="menu-best">High Score ({DIFFICULTY_CONFIG[difficulty].label}): {selectedLevelBestScore}</p>
-            </div>
-
-            <div className="menu-actions">
-              <button type="button" className="start-btn" onClick={restartGame}>Restart</button>
-              <button type="button" className="secondary-btn" onClick={backToMainMenu}>Back to Main Menu</button>
-            </div>
-          </div>
-        </div>
+        <GameOver restartGame={restartGame} gameOverReason={gameOverReason} difficulty={difficulty} setDifficulty={setDifficulty} cameraModeEnabled={cameraModeEnabled} setCameraModeEnabled={setCameraModeEnabled} selectedLevelBestScore={selectedLevelBestScore} backToMainMenu={backToMainMenu} />
       )}
 
       <Canvas camera={{ position: [0, 2.0, 2.3], fov: 45 }}>
         <ambientLight intensity={2} />
         <directionalLight position={[0, 10, 5]} intensity={2.5} castShadow />
-        
         <Suspense fallback={null}>
           <Environment preset="city" />
           <Luffy headRotation={headRotation} isHit={isHit} />
         </Suspense>
-
         {hasStarted && isReady && !isGameOver && !isPaused && (
-          <Lasers
-            difficulty={difficulty}
-            headRotationRef={headRotationRef}
-            onHit={handleHit}
-            onLaserFired={playLaserSfx}
-            setCurrentDodge={setCurrentDodge}
-          />
+          <Lasers difficulty={runDifficulty} headRotationRef={headRotationRef} onHit={handleHit} onLaserFired={playLaserSfx} setCurrentDodge={setCurrentDodge} />
         )}
-        
-        {/* Adjusted Target to keep the camera close but angled down the path */}
         <OrbitControls makeDefault target={[0, 1.4, -4]} enablePan={false} enableZoom={false} enableRotate={false} />
       </Canvas>
     </div>
