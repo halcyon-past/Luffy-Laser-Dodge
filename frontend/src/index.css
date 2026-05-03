@@ -671,15 +671,18 @@ canvas {
 
 .dodge-prompt {
   position: absolute;
-  top: 10%;
+  top: 15%;
   left: 50%;
   transform: translateX(-50%);
   z-index: 15;
   font-family: 'Trebuchet MS', 'Segoe UI', sans-serif;
-  font-size: clamp(1.8rem, 4vw, 3rem);
+  font-size: clamp(1.2rem, 6vw, 2.8rem); 
   font-weight: 900;
-  background: rgba(4, 10, 16, 0.6);
-  padding: 10px 40px;
+  background: rgba(4, 10, 16, 0.75);
+  padding: 8px min(10%, 40px);
+  width: max-content;
+  max-width: 85vw; 
+  text-align: center;
   border-radius: 12px;
   border: 3px solid;
   text-shadow: 2px 2px 0 #000, 0 0 10px currentColor;
@@ -688,6 +691,14 @@ canvas {
   text-transform: uppercase;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(4px);
+  box-sizing: border-box;
+}
+
+@media (max-width: 480px) {
+  .dodge-prompt {
+    top: 25%;
+    border-width: 2px;
+  }
 }
 
 .dodge-prompt.left {
