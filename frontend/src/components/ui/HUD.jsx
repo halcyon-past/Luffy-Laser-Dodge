@@ -20,7 +20,11 @@ export default function HUD({
         <h1 className="hud-title">{SITE_TITLE}</h1>
       </div>
       <p className="hud-copy">
-        {isMobile() ? 'Tap left/right to dodge' : 'Use Left/Right Arrows, A/D, or tap screen halves to dodge'}
+        {cameraModeEnabled 
+          ? 'Tilt your head left or right to dodge' 
+          : isMobile() 
+            ? 'Tap left/right to dodge' 
+            : 'Use Left/Right Arrows, A/D, or tap screen halves to dodge'}
       </p>
 
       <p className={`hud-webcam webcam-${webcamStatus}`}>Camera Mode: {cameraModeEnabled ? webcamStatus : 'disabled'}</p>
