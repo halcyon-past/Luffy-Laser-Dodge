@@ -2,10 +2,14 @@ import asyncio
 import json
 import logging
 import math
+import os
 from fastapi.responses import JSONResponse
 
 
 import cv2
+import mediapipe as mp
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision as mp_vision
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
 from aiortc.contrib.media import MediaRelay
 from aiortc.mediastreams import MediaStreamError
@@ -35,8 +39,12 @@ async def health_check():
 
 pcs = set()
 relay = MediaRelay()
-face_detector = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-eye_detector = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye_tree_eyeglasses.xml')
+
+# Setup MediaPipe Face Detector
+model_path = os.path.join(os.path.dirname(__file__), 'blaze_face_short_range.tflite')
+base_options = mp_python.BaseOptions(model_asset_path=model_path)
+options = mp_vision.FaceDetectorOptions(base_options=base_options, min_detection_confidence=0.5)
+face_detector = mp_vision.FaceDetector.create_from_options(options)
 
 
 class OfferRequest(BaseModel):
@@ -45,69 +53,42 @@ class OfferRequest(BaseModel):
 
 
 def infer_tilt_from_frame(frame_bgr, prev_relative_offset, baseline_offset):
+	# Resize if needed for performance, but MediaPipe is fast enough
+	# Let's keep a standard resolution to ensure consistent speeds
 	frame_h, frame_w = frame_bgr.shape[:2]
-	target_w = 320
-	scale = target_w / frame_w
-	resized = cv2.resize(frame_bgr, (target_w, int(frame_h * scale)), interpolation=cv2.INTER_LINEAR)
+	target_w = 480
+	if frame_w > target_w:
+		scale = target_w / frame_w
+		frame_bgr = cv2.resize(frame_bgr, (target_w, int(frame_h * scale)), interpolation=cv2.INTER_LINEAR)
+		# Update dimensions after resize
+		frame_h, frame_w = frame_bgr.shape[:2]
 
-	gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-	faces = face_detector.detectMultiScale(
-		gray,
-		scaleFactor=1.15,
-		minNeighbors=4,
-		minSize=(48, 48),
-	)
+	frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+	mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+	
+	results = face_detector.detect(mp_image)
 
-	if len(faces) == 0:
-		return 'center', prev_relative_offset * 0.92, baseline_offset, 0.0
+	if not results.detections:
+		return 'center', prev_relative_offset * 0.8, baseline_offset, 0.0
 
-	x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
-	face_center_x = x + (w / 2.0)
-	frame_center_x = resized.shape[1] / 2.0
-	raw_offset = (face_center_x - frame_center_x) / frame_center_x
+	# Get largest face if multiple
+	best_detection = max(results.detections, key=lambda d: d.bounding_box.width * d.bounding_box.height)
+	bbox = best_detection.bounding_box
 
-	face_roi_gray = gray[y:y + h, x:x + w]
-	eyes = eye_detector.detectMultiScale(
-		face_roi_gray,
-		scaleFactor=1.12,
-		minNeighbors=6,
-		minSize=(14, 14),
-	)
-
-	eye_roll_norm = 0.0
-	if len(eyes) >= 2:
-		eye_boxes = sorted(eyes, key=lambda e: e[2] * e[3], reverse=True)[:4]
-		eye_centers = []
-		for ex, ey, ew, eh in eye_boxes:
-			eye_centers.append((ex + ew / 2.0, ey + eh / 2.0))
-
-		# Choose the pair with the largest horizontal separation.
-		best_pair = None
-		best_dx = 0.0
-		for i in range(len(eye_centers)):
-			for j in range(i + 1, len(eye_centers)):
-				dx = abs(eye_centers[j][0] - eye_centers[i][0])
-				if dx > best_dx:
-					best_dx = dx
-					best_pair = (eye_centers[i], eye_centers[j])
-
-		if best_pair and best_dx > 6:
-			left_eye, right_eye = sorted(best_pair, key=lambda p: p[0])
-			dy = right_eye[1] - left_eye[1]
-			dx = right_eye[0] - left_eye[0]
-			roll_deg = math.degrees(math.atan2(dy, dx))
-			eye_roll_norm = max(-1.0, min(1.0, roll_deg / 16.0))
+	face_center_x = bbox.origin_x + (bbox.width / 2.0)
+	
+	# map 0..1 to -1..1 where 0 is center
+	raw_offset = ((face_center_x / frame_w) - 0.5) * 2.0
 
 	if baseline_offset is None:
 		baseline_offset = raw_offset
 
-	# Calibrate to user's neutral position to avoid one-sided bias from camera angle.
+	# Calibrate to user's neutral position
 	relative_offset = raw_offset - baseline_offset
-	fused_offset = (0.82 * relative_offset) + (0.55 * eye_roll_norm)
-	smoothed_relative_offset = (0.35 * prev_relative_offset) + (0.65 * fused_offset)
+	smoothed_relative_offset = (0.5 * prev_relative_offset) + (0.5 * relative_offset)
 
-	threshold = 0.028
-	hysteresis = 0.005
+	threshold = 0.12
+	hysteresis = 0.03
 
 	if smoothed_relative_offset > (threshold + hysteresis):
 		direction = 'right'
@@ -118,7 +99,7 @@ def infer_tilt_from_frame(frame_bgr, prev_relative_offset, baseline_offset):
 
 	if abs(smoothed_relative_offset) < threshold:
 		# Tiny baseline correction to compensate long-term camera drift.
-		baseline_offset = (0.998 * baseline_offset) + (0.002 * raw_offset)
+		baseline_offset = (0.99 * baseline_offset) + (0.01 * raw_offset)
 
 	return direction, smoothed_relative_offset, baseline_offset, raw_offset
 
@@ -146,7 +127,8 @@ async def process_video_track(track, send_tilt):
 		)
 		frame_count += 1
 
-		should_send = True
+		# Avoid spamming the frontend: only send when direction changes, or if the lean value changed significantly
+		should_send = (direction != last_direction) or (abs(relative_offset - last_sent_offset) > 0.05)
 
 		if should_send:
 			sent = await send_tilt(direction, relative_offset)
